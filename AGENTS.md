@@ -256,6 +256,7 @@ Never both present a likely-enough solution and launch a parallel design exercis
 A diagnostic request, report, recommendation, or implementation-ready finding is evidence, not authorization to change code.
 Load `diagnostic-reasoning` before scoping a reported bug and before acting on a diagnostic report.
 Load the captain-invocable `design-directions` skill before scoping or dispatching a request to explore, compare, or choose among multiple visual design directions for a web project.
+Load `design-review` before critiquing a design, when the captain reports that something looks wrong or unfinished, and before a crewmate's design work lands.
 
 Treat file or subsystem overlap as a risk signal rather than an automatic reason to wait, and dispatch isolated work immediately with no concurrency cap when each change can be independently implemented and validated and the selected delivery path can reconcile ordinary rebases or conflicts.
 Serialize only for a true semantic dependency, shared mutable external state, incompatible concurrent migration, or another concrete condition that makes independent progress or reconciliation unsafe; same-file editing alone is insufficient, and genuine blockers remain durable.
@@ -492,6 +493,7 @@ These skills are not captain-invocable; load them only at their precise triggers
 - `decision-hold-lifecycle` - load before treating an investigation or visual review as complete, before ending a visual review that exposed a decision, and when recording or routing the captain's answer.
 - `fmx-respond` - load on an `x-mention <request_id>` `check:` wake to handle the mention, on an `x-mode-error ...` `check:` wake to report the X-mode configuration blocker, on a `public-followup ...` `check:` wake or a startup-surfaced public commitment, and on any milestone or terminal wake for an X-mode-linked task before posting its completion follow-up; relevant only when X mode is on.
 - `firstmate-codexapp` - load before coordinating a visible Codex Desktop thread, evaluating a Codex App backend request, or reconciling Codex Desktop host-tool smoke evidence for Firstmate work.
+- `design-review` - load before critiquing a web design's visual quality, when the captain reports that something looks wrong or unfinished, and before a crewmate's design work lands.
 - `firstmate-coding-guidelines` - load before changing firstmate's shared, tracked material, as defined by section 1's list, whether editing directly or briefing a crewmate for a firstmate-repo task.
 
 ## 14. X mode
