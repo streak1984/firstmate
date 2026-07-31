@@ -61,13 +61,30 @@ make_case() {
 printf 'guard\n' >> "$FM_TEST_GUARD_LOG"
 SH
   chmod +x "$fake_root/bin/fm-guard.sh"
+  # FM_TEST_GH_EXPECT_TOKEN reproduces a private repository: any read arriving
+  # without exactly that GH_TOKEN fails as not-found, the way the real gh does
+  # under a different ambient account. auth token answers from a per-login
+  # fixture store so tests can prove which account's token reached a read.
   cat > "$fakebin/gh" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FM_TEST_GH_LOG"
 case " $* " in
-  *" headRefOid "*) printf '%s\n' "${FM_TEST_GH_HEAD:-0123456789abcdef0123456789abcdef01234567}" ;;
+  *" auth token -u "*)
+    [ "${FM_TEST_GH_TOKEN_FAIL:-0}" = 0 ] || exit 1
+    printf 'fixture-token-for-%s\n' "${4:-}"
+    exit 0
+    ;;
+  *" headRefOid "*)
+    if [ -n "${FM_TEST_GH_EXPECT_TOKEN:-}" ] && [ "${GH_TOKEN:-}" != "$FM_TEST_GH_EXPECT_TOKEN" ]; then
+      exit 1
+    fi
+    printf '%s\n' "${FM_TEST_GH_HEAD:-0123456789abcdef0123456789abcdef01234567}"
+    ;;
   *" state "*)
     [ "${FM_TEST_GH_FAIL:-0}" = 0 ] || exit 1
+    if [ -n "${FM_TEST_GH_EXPECT_TOKEN:-}" ] && [ "${GH_TOKEN:-}" != "$FM_TEST_GH_EXPECT_TOKEN" ]; then
+      exit 1
+    fi
     [ "${FM_TEST_GH_SLEEP:-0}" = 0 ] || sleep "$FM_TEST_GH_SLEEP"
     printf '%s\n' "${FM_TEST_GH_STATE:-OPEN}"
     ;;
@@ -732,9 +749,18 @@ test_static_poll_contract() {
   out=$(run_poll "$dir")
   [ -z "$out" ] || fail "static poll emitted with missing sidecar"
   mv "$dir/home/state/task-a.pr-poll.missing" "$dir/home/state/task-a.pr-poll"
-  printf '%s\n%s\n%s\n%s\n%s\n%s\n' github https://github.com/o/r/pull/1 github.com o/r 1 extra > "$dir/home/state/task-a.pr-poll"
+  printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n' github https://github.com/o/r/pull/1 github.com o/r 1 someaccount extra > "$dir/home/state/task-a.pr-poll"
   out=$(FM_TEST_GH_STATE=MERGED run_poll "$dir")
   [ -z "$out" ] || fail "static poll emitted with multiline sidecar"
+  printf '%s\n%s\n%s\n%s\n%s\n%s\n' github https://github.com/o/r/pull/1 github.com o/r 1 'bad--account' > "$dir/home/state/task-a.pr-poll"
+  out=$(FM_TEST_GH_STATE=MERGED run_poll "$dir")
+  [ -z "$out" ] || fail "static poll emitted with malformed account line"
+  printf '%s\n%s\n%s\n%s\n%s\n\n' github https://github.com/o/r/pull/1 github.com o/r 1 > "$dir/home/state/task-a.pr-poll"
+  out=$(FM_TEST_GH_STATE=MERGED run_poll "$dir")
+  [ -z "$out" ] || fail "static poll emitted with an empty account line"
+  printf '%s\n%s\n%s\n%s\n%s\n%s' github https://github.com/o/r/pull/1 github.com o/r 1 someaccount > "$dir/home/state/task-a.pr-poll"
+  out=$(FM_TEST_GH_STATE=MERGED run_poll "$dir")
+  [ -z "$out" ] || fail "static poll emitted with a truncated account line"
   printf '%s\n%s\n%s\n%s\n%s\n' github https://github.com/o/r/pull/1x github.com o/r 1x > "$dir/home/state/task-a.pr-poll"
   out=$(FM_TEST_GH_STATE=MERGED run_poll "$dir")
   [ -z "$out" ] || fail "static poll emitted with malformed numeric data"
@@ -761,6 +787,177 @@ test_static_poll_contract() {
   [ "$rc" -eq 0 ] || fail "watcher did not surface merged poll"
   [ "$(grep -c '^check: .*: merged$' "$dir/watch.out")" -eq 1 ] || fail "watcher did not convert merged output into exactly one wake"
   pass "static poll is silent except for one merged line and remains watcher-bounded"
+}
+
+# An account-bound poll must keep seeing a private repository while a different
+# gh account is ambient: the sidecar's sixth line names the login, the token is
+# resolved per invocation from gh's own store, and a resolution failure wakes
+# with a diagnostic instead of silently going blind on ambient credentials.
+test_account_bound_poll_lifecycle() {
+  local dir ambient_dir state out rc
+  dir=$(make_case account-bound-poll)
+  state="$dir/home/state"
+  write_task_meta "$dir"
+
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/1 --gh-account personal \
+    > "$dir/stdout" 2> "$dir/stderr" || fail "account-bound arm failed"
+  grep -qxF 'gh_account=personal' "$state/task-a.meta" \
+    || fail "account-bound arm did not record gh_account in meta"
+  [ "$(sed -n 6p "$state/task-a.pr-poll")" = personal ] \
+    || fail "account-bound arm did not record the account as sidecar data"
+  cmp -s "$POLL" "$state/task-a.check.sh" || fail "account-bound check was not byte-static"
+  fm_pr_poll_artifacts_valid "$state" task-a "$POLL" \
+    || fail "account-bound arm did not leave a validated armed poll"
+  grep -q 'auth token -u personal' "$dir/gh.log" \
+    || fail "arming did not resolve the account token through gh's store"
+  if grep -rq 'fixture-token' "$state" 2>/dev/null; then
+    fail "a resolved token was written into state"
+  fi
+  if grep -q 'fixture-token' "$dir/stdout" "$dir/stderr"; then
+    fail "a resolved token was echoed by arming"
+  fi
+
+  # The private repository answers only the personal token; the account-bound
+  # poll resolves it per run and reports the merge.
+  : > "$dir/gh.log"
+  out=$(FM_TEST_GH_EXPECT_TOKEN=fixture-token-for-personal FM_TEST_GH_STATE=MERGED run_poll "$dir")
+  [ "$out" = merged ] || fail "account-bound poll did not report merged under the resolved token"
+  grep -q 'auth token -u personal' "$dir/gh.log" \
+    || fail "the poll did not resolve the account token per invocation"
+  out=$(FM_TEST_GH_EXPECT_TOKEN=fixture-token-for-personal FM_TEST_GH_STATE=OPEN run_poll "$dir")
+  [ -z "$out" ] || fail "account-bound poll emitted for a non-merged state"
+
+  # Counterfactual: the same private repository with a plain ambient poll stays
+  # blind, which is exactly the failure the account binding removes.
+  ambient_dir=$(make_case account-ambient-blind)
+  make_poll_fixture "$ambient_dir"
+  out=$(FM_TEST_GH_EXPECT_TOKEN=fixture-token-for-personal FM_TEST_GH_STATE=MERGED run_poll "$ambient_dir")
+  [ -z "$out" ] || fail "ambient poll unexpectedly saw the private repository"
+  out=$(FM_TEST_GH_STATE=MERGED run_poll "$ambient_dir")
+  [ "$out" = merged ] || fail "no-account poll behavior changed on an ordinary repository"
+  grep -q 'auth token' "$ambient_dir/gh.log" \
+    && fail "no-account poll consulted gh's token store"
+
+  # A named account whose token cannot be resolved wakes with one diagnostic
+  # line rather than degrading to ambient credentials or staying silent.
+  out=$(FM_TEST_GH_TOKEN_FAIL=1 FM_TEST_GH_STATE=MERGED run_poll "$dir")
+  [ "$out" = 'gh-account-token-unavailable personal' ] \
+    || fail "token-unavailable poll did not emit exactly the diagnostic line"
+
+  # The watcher's validated dispatch carries the account through to the poll.
+  out=$(FM_TEST_GH_LOG="$dir/gh.log" FM_TEST_GH_EXPECT_TOKEN=fixture-token-for-personal \
+    FM_TEST_GH_STATE=MERGED PATH="$dir/fakebin:$BASE_PATH" \
+    "$POLL" --validated github https://github.com/o/r/pull/1 github.com o/r 1 personal)
+  [ "$out" = merged ] || fail "validated dispatch with an account did not report merged"
+  out=$(FM_TEST_GH_LOG="$dir/gh.log" FM_TEST_GH_STATE=MERGED PATH="$dir/fakebin:$BASE_PATH" \
+    "$POLL" --validated github https://github.com/o/r/pull/1 github.com o/r 1)
+  [ "$out" = merged ] || fail "six-argument validated dispatch no longer works"
+  rm -f "$state/.last-check"
+  set +e
+  FM_TEST_GH_LOG="$dir/gh.log" FM_TEST_GH_EXPECT_TOKEN=fixture-token-for-personal \
+    FM_TEST_GH_STATE=MERGED run_watcher_bounded "$dir/home" "$dir/fakebin" \
+    > "$dir/watch.out" 2> "$dir/watch.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || fail "watcher did not complete through the account-bound poll"
+  [ "$(grep -c '^check: .*: merged$' "$dir/watch.out")" -eq 1 ] \
+    || fail "watcher did not surface the account-bound merge as exactly one wake"
+  pass "account-bound poll merges through the resolved token where ambient credentials are blind"
+}
+
+test_account_arming_refusals() {
+  local dir state before after out rc bad
+  dir=$(make_case account-arm-refusals)
+  state="$dir/home/state"
+  write_task_meta "$dir"
+
+  # An account whose token gh cannot resolve refuses to arm at all: arming is
+  # the one point where a watch that could never see its PR stops loudly.
+  set +e
+  FM_TEST_GH_TOKEN_FAIL=1 run_check_entry "$dir" task-a https://github.com/o/r/pull/1 --gh-account personal \
+    > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -eq 1 ] || fail "unresolvable account did not refuse arming"
+  assert_grep 'no usable token for account personal' "$dir/stderr" \
+    "unresolvable-account refusal did not name the concrete repair"
+  [ ! -e "$state/task-a.check.sh" ] || fail "unresolvable account still armed a poll"
+  [ ! -e "$state/task-a.pr-poll" ] || fail "unresolvable account still wrote a sidecar"
+
+  # The account option is GitHub-only; a GitLab merge request refuses it.
+  set +e
+  run_check_entry "$dir" task-a 'https://gitlab.example/g/p/-/merge_requests/3' --gh-account personal \
+    > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -eq 2 ] || fail "GitLab URL with --gh-account was not refused"
+  [ ! -e "$state/task-a.check.sh" ] || fail "GitLab account refusal still armed a poll"
+
+  # Malformed logins are rejected as invalid requests before any side effect,
+  # including before gh's token store is ever consulted.
+  : > "$dir/gh.log"
+  # shellcheck disable=SC2016  # Literal command substitution probes account parsing safety.
+  for bad in '-leading' 'trailing-' 'double--hyphen' 'evil$(x)' 'with space' '' \
+    'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'; do
+    set +e
+    run_check_entry "$dir" task-a https://github.com/o/r/pull/1 --gh-account "$bad" \
+      > /dev/null 2> "$dir/stderr"
+    rc=$?
+    set -e
+    [ "$rc" -eq 2 ] || fail "malformed account was accepted: $bad"
+    [ ! -e "$state/task-a.check.sh" ] || fail "malformed account armed a poll: $bad"
+    [ ! -e "$state/task-a.pr-poll" ] || fail "malformed account wrote a sidecar: $bad"
+  done
+  grep -q 'auth token' "$dir/gh.log" \
+    && fail "a rejected account request still reached gh's token store"
+
+  # Re-arming without the option keeps the recorded binding instead of
+  # silently dropping the watch back to ambient credentials.
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/1 --gh-account personal \
+    > /dev/null 2> /dev/null || fail "could not arm the reuse fixture"
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/2 \
+    > /dev/null 2> /dev/null || fail "re-arming without the option failed"
+  grep -qxF 'gh_account=personal' "$state/task-a.meta" \
+    || fail "re-arming dropped the recorded account from meta"
+  [ "$(sed -n 6p "$state/task-a.pr-poll")" = personal ] \
+    || fail "re-arming dropped the recorded account from the sidecar"
+  [ "$(sed -n 2p "$state/task-a.pr-poll")" = 'https://github.com/o/r/pull/2' ] \
+    || fail "re-arming did not follow the new PR"
+
+  # A task with no recorded account arms the pre-account sidecar bytes.
+  write_task_meta "$dir" task-b
+  run_check_entry "$dir" task-b https://github.com/o/r/pull/5 \
+    > /dev/null 2> /dev/null || fail "plain arm failed"
+  [ "$(wc -l < "$state/task-b.pr-poll" | tr -d ' ')" = 5 ] \
+    || fail "a no-account sidecar gained extra lines"
+  grep -q '^gh_account=' "$state/task-b.meta" \
+    && fail "a plain arm recorded a gh account"
+  pass "account arming refuses unusable, non-GitHub, and malformed accounts and keeps recorded bindings"
+}
+
+test_migration_preserves_account_binding() {
+  local dir state meta_before meta_after
+  dir=$(make_case account-migration)
+  state="$dir/home/state"
+  write_task_meta "$dir"
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/7 --gh-account personal \
+    > /dev/null 2> /dev/null || fail "could not arm the account-bound fixture"
+  meta_before=$(cat "$state/task-a.meta")
+
+  # A template change (a firstmate upgrade) invalidates the armed bytes; the
+  # rebuild from validated metadata must keep the account binding, or the
+  # rebuilt watch on the private repository would go silently blind.
+  printf 'stale template bytes\n' > "$state/task-a.check.sh"
+  FM_HOME="$dir/home" "$MIGRATE" > "$dir/migrate.out" 2> "$dir/migrate.err" \
+    || fail "account-bound migration rebuild failed"
+  cmp -s "$POLL" "$state/task-a.check.sh" || fail "migration did not rebuild the static poll"
+  [ "$(sed -n 6p "$state/task-a.pr-poll")" = personal ] \
+    || fail "migration rebuild dropped the account binding"
+  fm_pr_poll_artifacts_valid "$state" task-a "$POLL" \
+    || fail "rebuilt account-bound poll did not validate"
+  meta_after=$(cat "$state/task-a.meta")
+  [ "$meta_after" = "$meta_before" ] || fail "migration changed the task metadata"
+  pass "migration rebuilds keep the recorded account binding"
 }
 
 test_atomic_interruption_leaves_no_partial_artifact() {
@@ -3338,6 +3535,9 @@ test_invalid_entrypoints_have_zero_side_effects
 test_valid_recording_and_merge_derivation
 test_rejected_metacharacter_bytes_are_inert
 test_static_poll_contract
+test_account_bound_poll_lifecycle
+test_account_arming_refusals
+test_migration_preserves_account_binding
 test_atomic_interruption_leaves_no_partial_artifact
 test_concurrent_watcher_sees_only_complete_publication
 test_postrename_poll_validation_revokes_and_retries

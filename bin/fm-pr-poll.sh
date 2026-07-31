@@ -1,21 +1,35 @@
 #!/usr/bin/env bash
 # Static watcher program for a validated PR/MR poll sidecar.
-# It emits exactly one merged line for a merged PR or MR and stays silent
-# otherwise, including on every error, so a failed lookup can never be read as
-# a merge. The provider-tagged identity is data in the sidecar and is never
-# interpolated into this source: these bytes are identical for every task.
+# It emits exactly one merged line for a merged PR or MR and stays silent on
+# every lookup error, so a failed lookup can never be read as a merge. The
+# provider-tagged identity and the optional GitHub account login are data in
+# the sidecar and are never interpolated into this source: these bytes are
+# identical for every task.
+# When a GitHub record names an account, its token is resolved fresh on every
+# run through gh's own store (gh auth token -u <account>) and passed to gh for
+# that one command only; no token is ever written anywhere. A poll that cannot
+# resolve the named account's token does NOT fall back to ambient credentials:
+# under a different ambient account a private repository reads as not found,
+# which is indistinguishable from never-merged, so the poll would go silently
+# blind forever. Instead it emits one "gh-account-token-unavailable <account>"
+# line so the watcher wakes firstmate with the concrete repair. That line
+# repeats at the watcher's slow check cadence until the account is signed in
+# again or the poll is re-armed, and it is never the word "merged", so a
+# credential failure can never be read as a merge either.
 # Each provider is read through its own standard CLI, gh for GitHub and glab
 # for GitLab, so an upstream checkout needs no extra tooling to follow either.
 set -u
 LC_ALL=C
 export LC_ALL
 
-if [ "$#" -eq 6 ] && [ "$1" = --validated ]; then
+account=
+if [ "$#" -ge 6 ] && [ "$#" -le 7 ] && [ "$1" = --validated ]; then
   provider=$2
   url=$3
   host=$4
   path=$5
   number=$6
+  account=${7-}
 elif [ "$#" -eq 0 ]; then
   case "$0" in
     *.check.sh) data=${0%.check.sh}.pr-poll ;;
@@ -29,8 +43,17 @@ elif [ "$#" -eq 0 ]; then
   IFS= read -r host <&3 || exit 0
   IFS= read -r path <&3 || exit 0
   IFS= read -r number <&3 || exit 0
-  if IFS= read -r _extra <&3; then
+  # A sixth line is the optional account; it must be non-empty, complete with
+  # its newline, and final. Anything else is a malformed record, not data.
+  if IFS= read -r account <&3; then
+    [ -n "$account" ] || exit 0
+    if IFS= read -r _extra <&3; then
+      exit 0
+    fi
+  elif [ -n "$account" ]; then
     exit 0
+  else
+    account=
   fi
   exec 3<&-
 else
@@ -44,6 +67,17 @@ esac
 case "$number" in
   *[!0-9]*) exit 0 ;;
 esac
+
+# The account is only ever a GitHub login handed to gh's own token store as
+# data, so it obeys the same shape rule as a GitHub owner and only a github
+# record may carry one.
+if [ -n "$account" ]; then
+  [ "$provider" = github ] || exit 0
+  [ "${#account}" -ge 1 ] && [ "${#account}" -le 39 ] || exit 0
+  case "$account" in
+    *[!A-Za-z0-9-]*|-*|*-|*--*) exit 0 ;;
+  esac
+fi
 
 # Every component is revalidated here rather than trusted from the sidecar, and
 # the stored URL must then be exactly reconstructible from those components, so
@@ -62,7 +96,15 @@ case "$provider" in
       .|..|*[!A-Za-z0-9._-]*) exit 0 ;;
     esac
     [ "$url" = "https://github.com/$owner/$repo/pull/$number" ] || exit 0
-    state=$(gh pr view "$url" --json state -q .state 2>/dev/null) || exit 0
+    if [ -n "$account" ]; then
+      if ! token=$(gh auth token -u "$account" 2>/dev/null) || [ -z "$token" ]; then
+        printf '%s %s\n' gh-account-token-unavailable "$account"
+        exit 0
+      fi
+      state=$(GH_TOKEN="$token" gh pr view "$url" --json state -q .state 2>/dev/null) || exit 0
+    else
+      state=$(gh pr view "$url" --json state -q .state 2>/dev/null) || exit 0
+    fi
     [ "$state" = MERGED ] && printf '%s\n' merged
     ;;
   gitlab)

@@ -29,11 +29,13 @@ FM_PR_DATA_URL=
 FM_PR_DATA_HOST=
 FM_PR_DATA_PATH=
 FM_PR_DATA_NUMBER=
+FM_PR_DATA_ACCOUNT=
 FM_PR_META_PROVIDER=
 FM_PR_META_URL=
 FM_PR_META_HOST=
 FM_PR_META_PATH=
 FM_PR_META_NUMBER=
+FM_PR_META_GH_ACCOUNT=
 FM_PR_REG_ID=
 FM_PR_REG_PROVIDER=
 FM_PR_REG_URL=
@@ -56,6 +58,7 @@ FM_PR_POLL_EXPECT_URL=
 FM_PR_POLL_EXPECT_HOST=
 FM_PR_POLL_EXPECT_PATH=
 FM_PR_POLL_EXPECT_NUMBER=
+FM_PR_POLL_EXPECT_ACCOUNT=
 FM_PR_POLL_EXPECT_DATA_HASH=
 FM_PR_POLL_EXPECT_TEMPLATE_HASH=
 FM_PR_POLL_EXPECT_DATA_IDENTITY=
@@ -68,6 +71,7 @@ FM_PR_POLL_SNAPSHOT_URL=
 FM_PR_POLL_SNAPSHOT_HOST=
 FM_PR_POLL_SNAPSHOT_PATH=
 FM_PR_POLL_SNAPSHOT_NUMBER=
+FM_PR_POLL_SNAPSHOT_ACCOUNT=
 FM_PR_POLL_SNAPSHOT_DATA_HASH=
 FM_PR_POLL_SNAPSHOT_TEMPLATE_HASH=
 FM_PR_POLL_SNAPSHOT_DATA_IDENTITY=
@@ -101,6 +105,19 @@ fm_task_id_path_safe() {
 fm_pr_task_id_valid() {
   local id=${1-}
   fm_task_id_path_safe "$id"
+}
+
+# An optional recorded forge account is a GitHub login used only as data for
+# gh's own token store (gh auth token -u <login>), never a token and never
+# interpolated into shell source. It obeys the same shape rule as a GitHub
+# owner, and only a github record may carry one.
+fm_pr_gh_account_valid() {
+  local account=${1-}
+  local LC_ALL=C
+  [ "${#account}" -ge 1 ] && [ "${#account}" -le 39 ] || return 1
+  case "$account" in
+    *[!A-Za-z0-9-]*|-*|*-|*--*) return 1 ;;
+  esac
 }
 
 fm_task_id_creation_valid() {
@@ -287,11 +304,13 @@ fm_pr_regular_destination_on_device_or_absent() {
 
 fm_pr_metadata_identity_parse() {
   local file=$1 line value pr_count=0 seen_pr=0 post_pr_invalid=0
+  local account_count=0 account_invalid=0
   FM_PR_META_PROVIDER=
   FM_PR_META_URL=
   FM_PR_META_HOST=
   FM_PR_META_PATH=
   FM_PR_META_NUMBER=
+  FM_PR_META_GH_ACCOUNT=
   [ -f "$file" ] && [ ! -L "$file" ] || return 1
   [ "$(fm_pr_file_link_count "$file")" = 1 ] || return 1
   while IFS= read -r line || [ -n "$line" ]; do
@@ -315,6 +334,15 @@ fm_pr_metadata_identity_parse() {
           fm_pr_head_valid "$value" || post_pr_invalid=1
         fi
         ;;
+      gh_account=*)
+        account_count=$((account_count + 1))
+        value=${line#gh_account=}
+        if fm_pr_gh_account_valid "$value"; then
+          [ "$account_count" -eq 1 ] && FM_PR_META_GH_ACCOUNT=$value
+        else
+          account_invalid=1
+        fi
+        ;;
       x_request=*|x_request_ts=*|x_followups=*|x_platform=*|x_reply_max_chars=*)
         ;;
       *)
@@ -324,20 +352,27 @@ fm_pr_metadata_identity_parse() {
   done < "$file"
   [ "$pr_count" -eq 1 ] || return 1
   [ "$post_pr_invalid" -eq 0 ] || return 1
+  [ "$account_count" -le 1 ] && [ "$account_invalid" -eq 0 ] || return 1
+  if [ -n "$FM_PR_META_GH_ACCOUNT" ] && [ "$FM_PR_META_PROVIDER" != github ]; then
+    return 1
+  fi
   [ -n "$FM_PR_META_URL" ]
 }
 
-# Sidecar layout: provider, url, host, path, number, one per line. A sidecar
+# Sidecar layout: provider, url, host, path, number, one per line, plus an
+# optional sixth line naming the GitHub account whose stored token the poll
+# must use (github records only; see fm_pr_gh_account_valid). A sidecar
 # written before the provider tag existed has a URL on its first line and one
 # line fewer, so it fails both the field count and the provider comparison and
 # is refused rather than misread as a provider-tagged record.
 fm_pr_poll_data_parse() {
-  local file=$1 provider url host path number
+  local file=$1 provider url host path number account=
   FM_PR_DATA_PROVIDER=
   FM_PR_DATA_URL=
   FM_PR_DATA_HOST=
   FM_PR_DATA_PATH=
   FM_PR_DATA_NUMBER=
+  FM_PR_DATA_ACCOUNT=
   [ -f "$file" ] && [ ! -L "$file" ] || return 1
   exec 8< "$file" || return 1
   IFS= read -r provider <&8 || { exec 8<&-; return 1; }
@@ -345,9 +380,18 @@ fm_pr_poll_data_parse() {
   IFS= read -r host <&8 || { exec 8<&-; return 1; }
   IFS= read -r path <&8 || { exec 8<&-; return 1; }
   IFS= read -r number <&8 || { exec 8<&-; return 1; }
-  if IFS= read -r _extra <&8; then
+  # A sixth line is the optional account; it must be non-empty, complete with
+  # its newline, and final.
+  if IFS= read -r account <&8; then
+    if [ -z "$account" ] || IFS= read -r _extra <&8; then
+      exec 8<&-
+      return 1
+    fi
+  elif [ -n "$account" ]; then
     exec 8<&-
     return 1
+  else
+    account=
   fi
   exec 8<&-
   fm_pr_url_parse "$url" || return 1
@@ -355,11 +399,16 @@ fm_pr_poll_data_parse() {
   [ "$host" = "$FM_PR_HOST" ] || return 1
   [ "$path" = "$FM_PR_PATH" ] || return 1
   [ "$number" = "$FM_PR_NUMBER" ] || return 1
+  if [ -n "$account" ]; then
+    [ "$FM_PR_PROVIDER" = github ] || return 1
+    fm_pr_gh_account_valid "$account" || return 1
+  fi
   FM_PR_DATA_PROVIDER=$FM_PR_PROVIDER
   FM_PR_DATA_URL=$FM_PR_URL
   FM_PR_DATA_HOST=$FM_PR_HOST
   FM_PR_DATA_PATH=$FM_PR_PATH
   FM_PR_DATA_NUMBER=$FM_PR_NUMBER
+  FM_PR_DATA_ACCOUNT=$account
 }
 
 # Registration layout: version tag, task id, then the same provider-tagged
@@ -421,6 +470,18 @@ fm_pr_poll_registration_parse() {
   FM_PR_REG_CHECK_IDENTITY=$check_identity
 }
 
+# Write one sidecar: the five identity lines, plus the account line only when
+# an account is recorded, so a no-account sidecar stays byte-identical to the
+# pre-account format.
+fm_pr_poll_data_write() {
+  local file=$1 provider=$2 url=$3 host=$4 path=$5 number=$6 account=${7-}
+  if [ -n "$account" ]; then
+    printf '%s\n%s\n%s\n%s\n%s\n%s\n' "$provider" "$url" "$host" "$path" "$number" "$account" > "$file"
+  else
+    printf '%s\n%s\n%s\n%s\n%s\n' "$provider" "$url" "$host" "$path" "$number" > "$file"
+  fi
+}
+
 fm_pr_poll_cleanup() {
   [ -z "$FM_PR_POLL_DATA_TMP" ] || rm -f -- "$FM_PR_POLL_DATA_TMP"
   [ -z "$FM_PR_POLL_CHECK_TMP" ] || rm -f -- "$FM_PR_POLL_CHECK_TMP"
@@ -450,13 +511,17 @@ fm_pr_poll_revoke_final() {
 }
 
 fm_pr_poll_prepare() {
-  local state=$1 id=$2 provider=$3 url=$4 host=$5 path=$6 number=$7 template=$8
+  local state=$1 id=$2 provider=$3 url=$4 host=$5 path=$6 number=$7 template=$8 account=${9-}
   fm_pr_task_id_valid "$id" || return 1
   fm_pr_url_parse "$url" || return 1
   [ "$provider" = "$FM_PR_PROVIDER" ] || return 1
   [ "$host" = "$FM_PR_HOST" ] || return 1
   [ "$path" = "$FM_PR_PATH" ] || return 1
   [ "$number" = "$FM_PR_NUMBER" ] || return 1
+  if [ -n "$account" ]; then
+    [ "$provider" = github ] || return 1
+    fm_pr_gh_account_valid "$account" || return 1
+  fi
   [ -f "$template" ] || return 1
 
   [ ! -L "$state" ] || return 1
@@ -472,6 +537,7 @@ fm_pr_poll_prepare() {
   FM_PR_POLL_EXPECT_HOST=$host
   FM_PR_POLL_EXPECT_PATH=$path
   FM_PR_POLL_EXPECT_NUMBER=$number
+  FM_PR_POLL_EXPECT_ACCOUNT=$account
   FM_PR_POLL_TEMPLATE=$template
   FM_PR_POLL_STATE_DEVICE=$(fm_pr_file_device "$state") || return 1
   [ -n "$FM_PR_POLL_STATE_DEVICE" ] || return 1
@@ -485,7 +551,7 @@ fm_pr_poll_prepare() {
     return 1
   }
 
-  if ! printf '%s\n%s\n%s\n%s\n%s\n' "$provider" "$url" "$host" "$path" "$number" > "$FM_PR_POLL_DATA_TMP" \
+  if ! fm_pr_poll_data_write "$FM_PR_POLL_DATA_TMP" "$provider" "$url" "$host" "$path" "$number" "$account" \
     || ! chmod 0600 "$FM_PR_POLL_DATA_TMP" \
     || ! fm_pr_private_file_valid "$FM_PR_POLL_DATA_TMP" 600 "$FM_PR_POLL_STATE_DEVICE" \
     || ! fm_pr_poll_data_parse "$FM_PR_POLL_DATA_TMP" \
@@ -494,6 +560,7 @@ fm_pr_poll_prepare() {
     || [ "$FM_PR_DATA_HOST" != "$host" ] \
     || [ "$FM_PR_DATA_PATH" != "$path" ] \
     || [ "$FM_PR_DATA_NUMBER" != "$number" ] \
+    || [ "$FM_PR_DATA_ACCOUNT" != "$account" ] \
     || ! cp "$template" "$FM_PR_POLL_CHECK_TMP" \
     || ! chmod 0600 "$FM_PR_POLL_CHECK_TMP" \
     || ! fm_pr_private_file_valid "$FM_PR_POLL_CHECK_TMP" 600 "$FM_PR_POLL_STATE_DEVICE" \
@@ -541,7 +608,8 @@ fm_pr_poll_publish_prepared() {
     || [ "$FM_PR_DATA_URL" != "$FM_PR_POLL_EXPECT_URL" ] \
     || [ "$FM_PR_DATA_HOST" != "$FM_PR_POLL_EXPECT_HOST" ] \
     || [ "$FM_PR_DATA_PATH" != "$FM_PR_POLL_EXPECT_PATH" ] \
-    || [ "$FM_PR_DATA_NUMBER" != "$FM_PR_POLL_EXPECT_NUMBER" ]; then
+    || [ "$FM_PR_DATA_NUMBER" != "$FM_PR_POLL_EXPECT_NUMBER" ] \
+    || [ "$FM_PR_DATA_ACCOUNT" != "$FM_PR_POLL_EXPECT_ACCOUNT" ]; then
     fm_pr_poll_revoke_final || true
     return 1
   fi
@@ -615,7 +683,8 @@ fm_pr_poll_artifacts_valid() {
   [ "$FM_PR_META_URL" = "$FM_PR_DATA_URL" ] || return 1
   [ "$FM_PR_META_HOST" = "$FM_PR_DATA_HOST" ] || return 1
   [ "$FM_PR_META_PATH" = "$FM_PR_DATA_PATH" ] || return 1
-  [ "$FM_PR_META_NUMBER" = "$FM_PR_DATA_NUMBER" ]
+  [ "$FM_PR_META_NUMBER" = "$FM_PR_DATA_NUMBER" ] || return 1
+  [ "$FM_PR_META_GH_ACCOUNT" = "$FM_PR_DATA_ACCOUNT" ]
 }
 
 fm_pr_poll_snapshot_capture() {
@@ -630,6 +699,7 @@ fm_pr_poll_snapshot_capture() {
   FM_PR_POLL_SNAPSHOT_HOST=$FM_PR_DATA_HOST
   FM_PR_POLL_SNAPSHOT_PATH=$FM_PR_DATA_PATH
   FM_PR_POLL_SNAPSHOT_NUMBER=$FM_PR_DATA_NUMBER
+  FM_PR_POLL_SNAPSHOT_ACCOUNT=$FM_PR_DATA_ACCOUNT
   FM_PR_POLL_SNAPSHOT_DATA_HASH=$FM_PR_REG_DATA_HASH
   FM_PR_POLL_SNAPSHOT_TEMPLATE_HASH=$FM_PR_REG_TEMPLATE_HASH
   FM_PR_POLL_SNAPSHOT_DATA_IDENTITY=$FM_PR_REG_DATA_IDENTITY
@@ -648,6 +718,7 @@ fm_pr_poll_snapshot_matches() {
   [ "$FM_PR_DATA_HOST" = "$FM_PR_POLL_SNAPSHOT_HOST" ] || return 1
   [ "$FM_PR_DATA_PATH" = "$FM_PR_POLL_SNAPSHOT_PATH" ] || return 1
   [ "$FM_PR_DATA_NUMBER" = "$FM_PR_POLL_SNAPSHOT_NUMBER" ] || return 1
+  [ "$FM_PR_DATA_ACCOUNT" = "$FM_PR_POLL_SNAPSHOT_ACCOUNT" ] || return 1
   [ "$FM_PR_REG_DATA_HASH" = "$FM_PR_POLL_SNAPSHOT_DATA_HASH" ] || return 1
   [ "$FM_PR_REG_TEMPLATE_HASH" = "$FM_PR_POLL_SNAPSHOT_TEMPLATE_HASH" ] || return 1
   [ "$FM_PR_REG_DATA_IDENTITY" = "$FM_PR_POLL_SNAPSHOT_DATA_IDENTITY" ] || return 1

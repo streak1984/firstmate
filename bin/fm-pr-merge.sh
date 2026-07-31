@@ -7,7 +7,16 @@
 # Merge method defaults to --squash when the caller passes none of --squash,
 # --merge, --rebase, or --method after the optional -- separator. Extra args
 # must not include --repo or -R because the repository comes only from the URL.
-# Usage: fm-pr-merge.sh <task-id> <pr-url> [-- <extra gh-axi pr merge args>]
+#
+# --gh-account passes the GitHub account login through to fm-pr-check.sh,
+# which records it (see that header for the schema and reuse rules). The merge
+# itself then honors whatever account the meta records - passed now or on an
+# earlier arm - by resolving its token per command with gh auth token -u, so a
+# PR on a repository the ambient account cannot see merges without any manual
+# credential prefix. No token is ever written to disk. A recorded account
+# whose token cannot be resolved refuses the merge rather than retrying with
+# ambient credentials, which could act on the wrong account's view of the PR.
+# Usage: fm-pr-merge.sh <task-id> <pr-url> [--gh-account <login>] [-- <extra gh-axi pr merge args>]
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -37,6 +46,15 @@ PR_OWNER=$FM_PR_OWNER
 PR_REPO=$FM_PR_REPO
 PR_NUMBER=$FM_PR_NUMBER
 shift 2
+ACCOUNT_ARG=
+if [ "${1:-}" = --gh-account ]; then
+  if [ "$#" -lt 2 ] || ! fm_pr_gh_account_valid "$2"; then
+    echo "error: invalid PR merge request" >&2
+    exit 2
+  fi
+  ACCOUNT_ARG=$2
+  shift 2
+fi
 [ "${1:-}" = "--" ] && shift
 
 caller_has_merge_method() {
@@ -70,15 +88,38 @@ if [ ! -f "$META" ] || [ -L "$META" ]; then
   exit 1
 fi
 
-"$SCRIPT_DIR/fm-pr-check.sh" "$ID" "$URL"
+if [ -n "$ACCOUNT_ARG" ]; then
+  "$SCRIPT_DIR/fm-pr-check.sh" "$ID" "$URL" --gh-account "$ACCOUNT_ARG"
+else
+  "$SCRIPT_DIR/fm-pr-check.sh" "$ID" "$URL"
+fi
 grep -qxF "pr=$URL" "$META" || {
   echo "error: PR metadata recording failed" >&2
   exit 1
 }
+
+# fm-pr-check.sh just made the meta authoritative for the account binding,
+# whether it was passed above or recorded by an earlier arm.
+ACCOUNT=$(grep '^gh_account=' "$META" | tail -1 | cut -d= -f2- || true)
+GH_TOKEN_VALUE=
+if [ -n "$ACCOUNT" ]; then
+  if ! fm_pr_gh_account_valid "$ACCOUNT"; then
+    echo "error: recorded gh account is invalid" >&2
+    exit 1
+  fi
+  if ! GH_TOKEN_VALUE=$(gh auth token -u "$ACCOUNT" 2>/dev/null) || [ -z "$GH_TOKEN_VALUE" ]; then
+    echo "error: gh has no usable token for account $ACCOUNT; run gh auth login" >&2
+    exit 1
+  fi
+fi
 
 merge_args=()
 if ! caller_has_merge_method "$@"; then
   merge_args=(--squash)
 fi
 
-gh-axi pr merge "$PR_NUMBER" --repo "$PR_OWNER/$PR_REPO" "${merge_args[@]+"${merge_args[@]}"}" "$@"
+if [ -n "$ACCOUNT" ]; then
+  GH_TOKEN="$GH_TOKEN_VALUE" gh-axi pr merge "$PR_NUMBER" --repo "$PR_OWNER/$PR_REPO" "${merge_args[@]+"${merge_args[@]}"}" "$@"
+else
+  gh-axi pr merge "$PR_NUMBER" --repo "$PR_OWNER/$PR_REPO" "${merge_args[@]+"${merge_args[@]}"}" "$@"
+fi
