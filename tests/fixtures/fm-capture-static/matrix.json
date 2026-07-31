@@ -1,0 +1,16 @@
+[
+  {
+    "name": "desktop-hero",
+    "path": "/",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "name": "mobile-active",
+    "path": "/",
+    "width": 390,
+    "height": 844,
+    "prepareScript": "() => { document.querySelector('#state').classList.add('active'); return true; }",
+    "waitSelector": "#state.active"
+  }
+]

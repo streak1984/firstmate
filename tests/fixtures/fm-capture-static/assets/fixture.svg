@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 640" role="img" aria-labelledby="title">
+  <title id="title">Abstract green composition</title>
+  <rect width="800" height="640" rx="72" fill="#112f2b"/>
+  <circle cx="560" cy="180" r="150" fill="#73e39a"/>
+  <path d="M90 500C210 250 360 610 710 330" fill="none" stroke="#f4efe8" stroke-width="54" stroke-linecap="round"/>
+</svg>

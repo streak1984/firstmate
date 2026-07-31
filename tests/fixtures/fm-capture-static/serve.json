@@ -1,0 +1,8 @@
+{
+  "mode": "static",
+  "buildCommand": "test -s index.html && test -s assets/fixture.svg",
+  "serverCommand": "python3 -m http.server --bind 127.0.0.1 \"$FM_CAPTURE_PORT\" --directory .",
+  "readyPath": "/",
+  "successStatus": 200,
+  "readyText": "Capture fixture"
+}

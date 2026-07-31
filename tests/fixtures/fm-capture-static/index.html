@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Capture fixture</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #f4efe8; color: #112f2b; font-family: Georgia, serif; }
+    main { min-height: 100vh; display: grid; grid-template-columns: 1.1fr 0.9fr; align-items: center; gap: 48px; padding: 64px 8vw; }
+    h1 { max-width: 10ch; margin: 0 0 24px; font-size: clamp(54px, 7vw, 108px); line-height: 0.95; }
+    p { max-width: 40ch; font: 20px/1.5 system-ui, sans-serif; }
+    img { display: block; width: 100%; filter: drop-shadow(0 24px 36px rgba(17, 47, 43, 0.2)); }
+    #state { display: inline-block; margin-top: 16px; padding: 10px 16px; border: 2px solid #112f2b; border-radius: 999px; font: 700 14px system-ui, sans-serif; }
+    #state.active { background: #73e39a; }
+    @media (max-width: 600px) {
+      main { grid-template-columns: 1fr; align-content: start; gap: 24px; padding: 40px 24px; }
+      h1 { font-size: 58px; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <section>
+      <h1>Capture fixture</h1>
+      <p>A static page with a real image, responsive layout, and a prepared active state.</p>
+      <span id="state">Prepared state</span>
+    </section>
+    <img src="assets/fixture.svg" alt="Abstract green composition">
+  </main>
+</body>
+</html>
