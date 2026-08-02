@@ -478,6 +478,8 @@ test_opencode_threads_model_and_ignores_effort_axis() {
   assert_not_contains "$launch" "--effort" "opencode launch must not pass unsupported --effort"
   assert_not_contains "$launch" "--variant" "opencode launch must not pass run-only --variant"
   assert_not_contains "$launch" "--thinking" "opencode launch must not pass pi thinking flag"
+  assert_not_contains "$launch" "--append-system-prompt" \
+    "opencode launch must not pass pi's appended crew system prompt"
   pass "opencode receives --model and omits the unsupported effort axis"
 }
 
@@ -499,7 +501,9 @@ test_pi_threads_model_and_max_effort() {
     "pi launch still exports the removed Calm input-reroute binding"
   assert_contains "$launch" "fm-operational-input.sh' encode launch-brief" \
     "pi launch lost the canonical typed launch-brief envelope"
-  pass "pi receives --model and --thinking max profile flags"
+  assert_contains "$launch" "--append-system-prompt '$ROOT/bin/pi-crew-system-prompt.md'" \
+    "pi launch did not append the crew discipline system prompt file"
+  pass "pi receives --model, --thinking max, and the appended crew system prompt"
 }
 
 test_pi_signed_threads_shared_pi_profile_and_preserves_identity() {
@@ -532,6 +536,8 @@ test_pi_signed_threads_shared_pi_profile_and_preserves_identity() {
   assert_contains "$ext" "\"--gen\", \"$gen\"" "pi extension does not carry the armed incarnation gen"
   assert_contains "$ext" '"--source", "pi-ext"' "pi extension does not attribute its semantic source"
   assert_contains "$ext" 'pi.on("turn_end"' "pi extension lost the turn-end notification touch"
+  assert_contains "$launch" "--append-system-prompt '$ROOT/bin/pi-crew-system-prompt.md'" \
+    "pi-signed launch did not append the crew discipline system prompt file"
   pass "pi-signed shares Pi launch semantics while preserving its configured and recorded identity"
 }
 
@@ -577,6 +583,8 @@ test_pi_signed_persistent_secondmate_uses_pi_extensions_and_identity() {
   launch=$(cat "$LAUNCH_LOG")
   assert_contains "$launch" "FM_PI_HARNESS=pi-signed pi-signed -e '$sm/.pi/extensions/fm-primary-turnend-guard.ts' -e '$sm/.pi/extensions/fm-primary-pi-watch.ts'" \
     "pi-signed secondmate did not share Pi's primary extension launch shape"
+  assert_contains "$launch" "--append-system-prompt '$ROOT/bin/pi-crew-system-prompt.md'" \
+    "pi-signed secondmate launch did not append the crew discipline system prompt file"
   pass "pi-signed is a distinct persistent secondmate runtime with shared Pi supervision semantics"
 }
 

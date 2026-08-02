@@ -110,6 +110,8 @@
 #                  written by this script; outside the worktree to avoid pi's trust gate)
 #     __PITURNEND__ absolute path to .pi/extensions/fm-primary-turnend-guard.ts in a pi secondmate home
 #     __PIWATCH__   absolute path to .pi/extensions/fm-primary-pi-watch.ts in a pi secondmate home
+#     __PISYSPROMPT__ absolute path to bin/pi-crew-system-prompt.md, appended to pi's
+#                  default system prompt on every pi/pi-signed launch regardless of model
 #     __OPINPUT__   absolute path to the canonical operational-input encoder
 # Before every harness launch, the pane shell receives an idempotent PATH
 # guarantee for ${NPM_CONFIG_PREFIX:-$HOME/.npm-global}/bin so stale inherited
@@ -477,11 +479,14 @@ launch_template() {
       fi
       ;;
     opencode) printf '%s' 'OPENCODE_CONFIG_CONTENT='\''{"permission":{"*":"allow"}}'\'' opencode __MODELFLAG__--prompt "$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
+    # --append-system-prompt takes a file path and layers verification discipline
+    # (see bin/pi-crew-system-prompt.md) on top of pi's default prompt for every
+    # pi-family launch, model-agnostic by design.
     pi|pi-signed)
       if [ "$kind" = secondmate ]; then
-        printf '%s%s' "$harness" ' __MODELFLAG____EFFORTFLAG__-e __PITURNEND__ -e __PIWATCH__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
+        printf '%s%s' "$harness" ' __MODELFLAG____EFFORTFLAG__-e __PITURNEND__ -e __PIWATCH__ --append-system-prompt __PISYSPROMPT__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
       else
-        printf '%s%s' "$harness" ' __MODELFLAG____EFFORTFLAG__-e __PIEXT__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
+        printf '%s%s' "$harness" ' __MODELFLAG____EFFORTFLAG__-e __PIEXT__ --append-system-prompt __PISYSPROMPT__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
       fi
       ;;
     # grok (Grok Build TUI): a positional prompt starts the supervised interactive
@@ -1732,6 +1737,7 @@ sq_turnend=$(shell_quote "$TURNEND")
 sq_piext=$(shell_quote "$STATE/$ID.pi-ext.ts")
 sq_piturnend=$(shell_quote "$PROJ_ABS/.pi/extensions/fm-primary-turnend-guard.ts")
 sq_piwatch=$(shell_quote "$PROJ_ABS/.pi/extensions/fm-primary-pi-watch.ts")
+sq_pisysprompt=$(shell_quote "$FM_ROOT/bin/pi-crew-system-prompt.md")
 sq_opinput=$(shell_quote "$FM_ROOT/bin/fm-operational-input.sh")
 MODELFLAG=$(model_flag_for_harness "$HARNESS" "$MODEL")
 EFFORTFLAG=$(effort_flag_for_harness "$HARNESS" "$EFFORT")
@@ -1742,6 +1748,7 @@ LAUNCH=${LAUNCH//__TURNEND__/$sq_turnend}
 LAUNCH=${LAUNCH//__PIEXT__/$sq_piext}
 LAUNCH=${LAUNCH//__PITURNEND__/$sq_piturnend}
 LAUNCH=${LAUNCH//__PIWATCH__/$sq_piwatch}
+LAUNCH=${LAUNCH//__PISYSPROMPT__/$sq_pisysprompt}
 LAUNCH=${LAUNCH//__OPINPUT__/$sq_opinput}
 # Crewmate panes are created by a long-lived tmux/herdr daemon that does not
 # inherit firstmate's current environment, so a bare `claude` in the pane falls

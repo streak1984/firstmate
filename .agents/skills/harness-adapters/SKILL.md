@@ -291,6 +291,7 @@ Project trust dialog can appear on the first pi run in any not-yet-trusted direc
 Accept with Enter.
 The decision persists per path in `~/.pi/agent/trust.json`, so later spawns in the same worktree slot skip it.
 
+Every pi-family launch appends `bin/pi-crew-system-prompt.md` via `--append-system-prompt`, regardless of model, because its reason-then-verify discipline counters observed optimistic self-reporting (notably on DeepSeek-class models) and is model-agnostic good behavior; that file owns the rules.
 `fm-spawn` keeps the turn-end extension in `state/`, outside the worktree, because project-local extension files make the trust gate strictly worse and pollute the project.
 The extension must listen for pi's `turn_end` event, not `agent_end`, so the watcher wakes after each completed turn instead of only when the whole agent run exits.
 Pi sets `PI_CODING_AGENT=true` for its children; this is its harness-detection env marker.

@@ -204,6 +204,10 @@
       "audience": "public-product"
     },
     {
+      "path": "bin/pi-crew-system-prompt.md",
+      "audience": "agent-runtime"
+    },
+    {
       "path": "docs/architecture.md",
       "audience": "maintainer-architecture"
     },
