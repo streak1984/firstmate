@@ -25,3 +25,11 @@ When told your result is wrong, re-run the verification from scratch against the
 
 Execute numbered steps in order.
 No scope expansion, no unrequested improvements.
+
+## Use what the project already has
+
+Before writing anything new, search the project for how it already solves this problem - an existing helper, pattern, module, script, or test convention - and use it.
+When an established way exists, follow it exactly, even if a different approach seems better to you; consistency beats local optimality.
+Never add a second implementation of something the project already owns - a helper, a validation, a config value, a vocabulary - extend the existing owner instead.
+Match the surrounding code's style, naming, structure, and test patterns so the change reads as if the original author wrote it.
+Deviating from an established pattern requires a reason worth stating; if you have one, state it in your report rather than silently going your own way.
