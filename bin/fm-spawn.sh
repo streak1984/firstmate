@@ -181,6 +181,8 @@ SUB_HOME_MARKER=".fm-secondmate-home"
 . "$SCRIPT_DIR/fm-busy-lib.sh"
 # shellcheck source=bin/fm-pr-lib.sh
 . "$SCRIPT_DIR/fm-pr-lib.sh"
+# shellcheck source=bin/fm-effort-lib.sh
+. "$SCRIPT_DIR/fm-effort-lib.sh"
 # Fail closed before any fleet mutation: a no-mistakes gate agent must never spawn
 # a direct report (see bin/fm-gate-refuse-lib.sh).
 fm_refuse_if_gate_agent
@@ -666,41 +668,32 @@ model_flag_for_harness() {
 effort_flag_for_harness() {
   local harness=$1 effort=$2
   [ -n "$effort" ] && [ "$effort" != default ] || return 0
+  # bin/fm-effort-lib.sh owns which levels each harness accepts (with the
+  # per-adapter evidence); this function only owns each harness's flag syntax.
+  # An unsupported level is omitted rather than passed as a known-bad value.
+  fm_effort_level_supported "$harness" "$effort" || return 0
   case "$harness" in
     claude)
-      case "$effort" in
-        low|medium|high|xhigh|max) printf -- '--effort %s ' "$(shell_quote "$effort")" ;;
-      esac
+      printf -- '--effort %s ' "$(shell_quote "$effort")"
       ;;
     codex)
-      # The installed codex config schema uses model_reasoning_effort, and the
-      # bundled model catalog advertises low|medium|high|xhigh. Omit max rather
-      # than passing an unsupported value.
-      case "$effort" in
-        low|medium|high|xhigh) printf -- '-c %s ' "$(shell_quote "model_reasoning_effort=\"$effort\"")" ;;
-      esac
+      # The installed codex config schema uses model_reasoning_effort.
+      printf -- '-c %s ' "$(shell_quote "model_reasoning_effort=\"$effort\"")"
       ;;
     grok)
       # grok exposes both --effort and --reasoning-effort; firstmate's profile
-      # axis is the reasoning knob. As of grok 0.2.99, --reasoning-effort accepts
-      # only low|medium|high and rejects both xhigh and max, so omit those rather
-      # than passing a known-bad value.
-      case "$effort" in
-        low|medium|high) printf -- '--reasoning-effort %s ' "$(shell_quote "$effort")" ;;
-      esac
+      # axis is the reasoning knob.
+      printf -- '--reasoning-effort %s ' "$(shell_quote "$effort")"
       ;;
     pi|pi-signed)
-      # Pi 0.80.6 accepts the full shared effort vocabulary, including max, through
-      # its --thinking flag.
-      case "$effort" in
-        low|medium|high|xhigh|max) printf -- '--thinking %s ' "$(shell_quote "$effort")" ;;
-      esac
+      printf -- '--thinking %s ' "$(shell_quote "$effort")"
       ;;
     # opencode's interactive `opencode --prompt` launch has a verified --model
     # flag but no verified effort flag. Its `opencode run --variant` flag belongs
     # to a different, non-interactive launch mode, so fm-spawn does not pass it.
     # kimi likewise has no reasoning-effort flag; the requested axis stays in
-    # task metadata but never reaches the launch command.
+    # task metadata but never reaches the launch command. Both map to an empty
+    # level list in fm-effort-lib.sh, so the guard above already returned.
   esac
 }
 

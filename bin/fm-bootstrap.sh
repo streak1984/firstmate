@@ -114,6 +114,8 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 . "$SCRIPT_DIR/fm-x-lib.sh"
 # shellcheck source=bin/fm-backend.sh disable=SC1091
 . "$SCRIPT_DIR/fm-backend.sh"
+# shellcheck source=bin/fm-effort-lib.sh disable=SC1091
+. "$SCRIPT_DIR/fm-effort-lib.sh"
 
 fleet_sync_origin_backed_project_count() {
   local count proj
@@ -733,16 +735,12 @@ crew_dispatch_validate() {
     echo "CREW_DISPATCH: invalid config/crew-dispatch.json - malformed JSON"
     return 0
   fi
-  err=$(jq -r '
+  err=$(jq -r --argjson effort_levels "$(fm_effort_levels_json)" '
     def verified($h): ["claude","codex","opencode","pi","pi-signed","grok","kimi"] | index($h);
     def effort_ok($h; $e):
       if $e == null then true
       elif ($e | type) != "string" then false
-      elif $h == "claude" then (["low","medium","high","xhigh","max"] | index($e))
-      elif $h == "codex" then (["low","medium","high","xhigh"] | index($e))
-      elif $h == "grok" then (["low","medium","high"] | index($e))
-      elif $h == "pi" or $h == "pi-signed" then (["low","medium","high","xhigh","max"] | index($e))
-      elif $h == "opencode" or $h == "kimi" then false
+      elif ($effort_levels | has($h)) then (($effort_levels[$h] | index($e)) != null)
       else true
       end;
     def profiles($value):
