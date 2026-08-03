@@ -114,8 +114,10 @@
 #                  default system prompt on every pi/pi-signed launch regardless of model
 #     __OPINPUT__   absolute path to the canonical operational-input encoder
 # Before every harness launch, the pane shell receives an idempotent PATH
-# guarantee for ${NPM_CONFIG_PREFIX:-$HOME/.npm-global}/bin so stale inherited
-# home-manager guards cannot hide the fleet npm tools from the worker.
+# guarantee for the fleet toolchain dirs (${NPM_CONFIG_PREFIX:-$HOME/.npm-global}/bin
+# and $HOME/.local/bin) and drops the exported home-manager __HM_SESS_VARS_SOURCED
+# guard, so a stale inherited guard can neither hide the fleet tools from the
+# worker nor stop a descendant login shell from re-sourcing the current session vars.
 # After a verified template launch, spawn observes any empirically supported
 # autonomy footer without changing permissions or blocking the worker; currently
 # only Claude's bypass/auto/manual footer distinction is verified.
@@ -634,6 +636,18 @@ fleet_toolchain_bin() {
   }
   [ "$prefix" = / ] || prefix=${prefix%/}
   printf '%s/bin\n' "$prefix"
+}
+
+# The full fleet toolchain directory list, one per line: the npm bin dir from
+# fleet_toolchain_bin, then the user-local standalone-installer dir ($HOME/.local/bin
+# holds treehouse, no-mistakes, claude, codex). Derived from $HOME, never hardcoded.
+fleet_toolchain_dirs() {
+  fleet_toolchain_bin || return 1
+  [ -n "${HOME:-}" ] || {
+    echo "error: HOME is unset, so the fleet toolchain directory cannot be resolved" >&2
+    return 1
+  }
+  printf '%s\n' "$HOME/.local/bin"
 }
 
 resolve_kimi_binary() {
@@ -1767,14 +1781,21 @@ if [ "$KIND" = secondmate ]; then
 fi
 # A login shell that predates a home-manager PATH change can export
 # __HM_SESS_VARS_SOURCED without the newer variables, making every descendant
-# skip the current session-vars file. Guarantee the npm fleet-tool directory in
-# the pane instead of trusting that poisoned parent PATH. NPM_CONFIG_PREFIX owns
-# a configured prefix; the fleet's user-owned HOME prefix is the fallback. The
-# shell case makes repeated spawns converge without duplicating the entry, and
+# skip the current session-vars file. Guarantee the fleet toolchain dirs in the
+# pane instead of trusting that poisoned parent PATH, and unset the exported
+# guard so any descendant login shell re-sources the CURRENT session vars (the
+# guard re-exports itself on that source). NPM_CONFIG_PREFIX owns a configured
+# npm prefix; the fleet's user-owned HOME prefix is the fallback. The per-dir
+# shell case makes repeated spawns converge without duplicating an entry, and
 # the directory need not exist for PATH construction.
-FLEET_TOOLCHAIN_BIN=$(fleet_toolchain_bin) || exit 1
-sq_fleet_toolchain_bin=$(shell_quote "$FLEET_TOOLCHAIN_BIN")
-PATH_GUARANTEE="fm_spawn_toolchain_bin=$sq_fleet_toolchain_bin; case \":\${PATH-}:\" in *\":\${fm_spawn_toolchain_bin}:\"*) ;; *) export PATH=\"\${fm_spawn_toolchain_bin}\${PATH:+:\${PATH}}\" ;; esac; unset fm_spawn_toolchain_bin"
+FLEET_TOOLCHAIN_DIRS=$(fleet_toolchain_dirs) || exit 1
+sq_fleet_toolchain_dirs=
+while IFS= read -r fm_spawn_path_dir; do
+  sq_fleet_toolchain_dirs="$sq_fleet_toolchain_dirs$(shell_quote "$fm_spawn_path_dir") "
+done <<EOF
+$FLEET_TOOLCHAIN_DIRS
+EOF
+PATH_GUARANTEE="unset __HM_SESS_VARS_SOURCED; for fm_spawn_toolchain_bin in ${sq_fleet_toolchain_dirs% }; do case \":\${PATH-}:\" in *\":\${fm_spawn_toolchain_bin}:\"*) ;; *) export PATH=\"\${fm_spawn_toolchain_bin}\${PATH:+:\${PATH}}\" ;; esac; done; unset fm_spawn_toolchain_bin"
 spawn_send_text_line "$T" "$PATH_GUARANTEE"
 
 # Export GOTMPDIR into the crewmate's pane shell so the agent and every child

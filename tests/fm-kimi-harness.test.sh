@@ -62,10 +62,10 @@ case "${1:-}" in
   has-session|new-session|new-window|kill-window) exit 0 ;;
   send-keys)
     case "${4:-}" in
-      fm_spawn_toolchain_bin=*)
+      *fm_spawn_toolchain_bin*)
         pane_command=$4
-        PATH="${FM_FAKE_INITIAL_PANE_PATH:-/usr/bin:/bin}" /bin/zsh -c \
-          "$pane_command; $pane_command; printf '%s\\n' \"\$PATH\"" \
+        PATH="${FM_FAKE_INITIAL_PANE_PATH:-/usr/bin:/bin}" __HM_SESS_VARS_SOURCED=1 /bin/zsh -c \
+          "$pane_command; $pane_command; printf 'TOOL:%s\\n' \"\$(command -v tasks-axi)\"; printf 'GUARD:%s\\n' \"\${__HM_SESS_VARS_SOURCED-unset}\"; printf 'PATH:%s\\n' \"\$PATH\"" \
           > "$FM_FAKE_TOOLCHAIN_PATH_LOG"
         exit 0
         ;;
@@ -166,6 +166,7 @@ run_spawn() {
   HOME="$home" FM_ROOT_OVERRIDE='' FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
+    NPM_CONFIG_PREFIX='' \
     FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$wt" TMUX="fake,1,0" \
     FM_FAKE_LAUNCH_LOG="$case_dir/launch.log" \
     FM_FAKE_POINTER_LOG="$case_dir/pointer.log" \
@@ -188,7 +189,7 @@ EOF
 }
 
 test_kimi_launch_then_send_is_verified() {
-  local id rec out rc launch pointer brief_real meta task_tmp toolchain_path toolchain_bin count
+  local id rec out rc launch pointer brief_real meta task_tmp toolchain_log toolchain_path npm_bin local_bin count
   id="kimi-success-z1-$$"
   task_tmp="/tmp/fm-$id"
   KIMI_RUNTIME_TASK_TMP=$task_tmp
@@ -220,13 +221,17 @@ test_kimi_launch_then_send_is_verified() {
   assert_present "$task_tmp/gotmp" "kimi spawn did not create its Go temp directory"
   assert_grep "export GOTMPDIR=$task_tmp/gotmp" "$CASE_DIR/tmux-calls.log" \
     "kimi spawn did not export its Go temp directory into the pane"
-  toolchain_path=$(cat "$CASE_DIR/toolchain-path.log")
-  toolchain_bin="$HOME_DIR/.npm-global/bin"
-  count=$(printf '%s\n' "$toolchain_path" | tr ':' '\n' | grep -Fxc "$toolchain_bin" || true)
-  [ "$count" -eq 1 ] \
-    || fail "two fleet-toolchain PATH guarantees left $count copies of $toolchain_bin in '$toolchain_path'"
+  toolchain_log=$(cat "$CASE_DIR/toolchain-path.log")
+  toolchain_path=$(printf '%s\n' "$toolchain_log" | sed -n 's/^PATH://p')
+  npm_bin="$HOME_DIR/.npm-global/bin"
+  local_bin="$HOME_DIR/.local/bin"
+  for d in "$npm_bin" "$local_bin"; do
+    count=$(printf '%s\n' "$toolchain_path" | tr ':' '\n' | grep -Fxc "$d" || true)
+    [ "$count" -eq 1 ] \
+      || fail "two fleet-toolchain PATH guarantees left $count copies of $d in '$toolchain_path'"
+  done
   case "$toolchain_path" in
-    "$toolchain_bin":/usr/bin:/bin) ;;
+    "$local_bin:$npm_bin":/usr/bin:/bin) ;;
     *) fail "fleet toolchain PATH guarantee clobbered or reordered the pane PATH: $toolchain_path" ;;
   esac
   assert_grep 'BEGIN FIRSTMATE KIMI TURN-END HOOK' "$HOME_DIR/.kimi-code/config.toml" \
@@ -234,6 +239,32 @@ test_kimi_launch_then_send_is_verified() {
   assert_grep 'token=' "$WT_DIR/.fm-kimi-turnend" "kimi spawn did not write its token pointer"
   assert_present "$HOME_DIR/state/$id.kimi-turnend-token" "kimi spawn did not record its token"
   pass "fm-spawn: kimi launches, delivers its brief, and registers a guarded turn-end token"
+}
+
+test_spawn_path_guarantee_resolves_stripped_toolchain() {
+  local id rec out rc log resolve guard
+  id="kimi-path-resolve-z9-$$"
+  rec=$(make_spawn_case path-resolve "$id")
+  read_spawn_record "$rec"
+  # The acceptance contract: with __HM_SESS_VARS_SOURCED exported and the
+  # toolchain stripped from the pane PATH, the spawn-constructed guarantee must
+  # still resolve a tool inside $HOME/.npm-global/bin. The probe runs the
+  # guarantee with a stripped PATH and the exported guard, then asks the pane
+  # shell for the resolved tool and the guard's fate.
+  mkdir -p "$HOME_DIR/.npm-global/bin"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$HOME_DIR/.npm-global/bin/tasks-axi"
+  chmod +x "$HOME_DIR/.npm-global/bin/tasks-axi"
+  out=$(run_spawn "$CASE_DIR" "$HOME_DIR" "$PROJ_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id")
+  rc=$?
+  expect_code 0 "$rc" "spawn should succeed with the toolchain stripped from the pane PATH"
+  log=$(cat "$CASE_DIR/toolchain-path.log")
+  resolve=$(printf '%s\n' "$log" | sed -n 's/^TOOL://p')
+  [ "$resolve" = "$HOME_DIR/.npm-global/bin/tasks-axi" ] \
+    || fail "toolchain guarantee did not resolve tasks-axi from a stripped pane PATH: '$resolve'"
+  guard=$(printf '%s\n' "$log" | sed -n 's/^GUARD://p')
+  [ "$guard" = unset ] \
+    || fail "toolchain guarantee did not drop the stale __HM_SESS_VARS_SOURCED guard: '$guard'"
+  pass "fm-spawn: the worker PATH guarantee resolves stripped toolchain dirs and drops the stale home-manager guard"
 }
 
 test_kimi_hook_install_is_surgical_idempotent_and_removable() {
@@ -682,6 +713,7 @@ test_kimi_hook_remove_preserves_owned_newline_boundary
 test_kimi_hook_fails_closed_on_missing_malformed_or_partial_config
 test_kimi_hook_install_refuses_without_jq
 test_kimi_launch_then_send_is_verified
+test_spawn_path_guarantee_resolves_stripped_toolchain
 test_kimi_hook_is_silent_and_requires_registered_workspace_token
 test_kimi_spawn_refuses_unsafe_global_config_before_pane_creation
 test_kimi_teardown_removes_pointer_and_registry_token
