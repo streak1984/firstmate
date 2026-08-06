@@ -63,6 +63,7 @@ run_spawn() {  # <home> <wt> <fakebin> <spawn-args...>
     FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
     FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$wt" TMUX="fake,1,0" \
     GROK_HOME="$home/grok-home" PATH="$fakebin:$PATH" \
+    FM_SPAWN_CONFIRM_TIMEOUT=0 FM_SPAWN_CONFIRM_POLL_INTERVAL=0.01 \
     "$SPAWN" "$@" 2>&1
 }
 

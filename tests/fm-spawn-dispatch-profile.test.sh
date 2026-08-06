@@ -13,6 +13,12 @@ set -u
 SPAWN="$ROOT/bin/fm-spawn.sh"
 TMP_ROOT=$(fm_test_tmproot fm-spawn-dispatch-profile)
 
+# This suite only exercises launch construction, so bound the post-launch
+# confirmation phase to its single minimum poll on every invocation - several
+# tests call "$SPAWN" directly and this suite runs with the real sleep.
+export FM_SPAWN_CONFIRM_TIMEOUT=0
+export FM_SPAWN_CONFIRM_POLL_INTERVAL=0.01
+
 make_spawn_fakebin() {
   local dir=$1 fakebin
   fakebin=$(fm_fakebin "$dir")
@@ -94,6 +100,7 @@ run_spawn() {
     FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$wt" TMUX="fake,1,0" \
     CLAUDE_CONFIG_DIR="${FM_TEST_CLAUDE_CONFIG_DIR:-}" \
     FM_FAKE_LAUNCH_LOG="$launchlog" GROK_HOME="$home/grok-home" PATH="$fakebin:$PATH" \
+    FM_SPAWN_CONFIRM_TIMEOUT=0 FM_SPAWN_CONFIRM_POLL_INTERVAL=0.01 \
     "$SPAWN" "$@" 2>&1
 }
 

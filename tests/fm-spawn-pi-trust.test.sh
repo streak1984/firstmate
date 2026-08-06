@@ -117,6 +117,7 @@ run_spawn() {  # <home> <project> <worktree> <fakebin> <id> <harness> <dialog-de
     FM_FAKE_KEYS_LOG="$TMP_ROOT/$id.keys" FM_FAKE_CAPTURE_COUNT="$TMP_ROOT/$id.captures" \
     FM_PI_TRUST_POLLS=3 FM_PI_TRUST_POLL_INTERVAL=0 \
     FM_PI_TRUST_CLEAR_POLLS=3 FM_PI_TRUST_CLEAR_POLL_INTERVAL=0 \
+    FM_SPAWN_CONFIRM_TIMEOUT=0 FM_SPAWN_CONFIRM_POLL_INTERVAL=0.01 \
     TMUX='fake,1,0' PATH="$fakebin:$PATH" \
     "$SPAWN" "$id" "$project" --harness "$harness" 2>&1
 }
@@ -158,7 +159,9 @@ EOF
   expect_code 0 "$rc" "an absent dialog must not disturb the spawn"
   assert_contains "$out" "spawned $id harness=pi" "absent dialog blocked spawn completion"
   [ "$(enter_count "$TMP_ROOT/$id.keys")" = 4 ] || fail "trust handler sent keys without a dialog match"
-  [ "$(capture_count "$TMP_ROOT/$id.captures")" = 4 ] || fail "expected only the bounded poll (4 captures), got $(capture_count "$TMP_ROOT/$id.captures")"
+  # The confirmation phase follows the pi phase for ship/scout spawns and adds
+  # its single bounded poll (FM_SPAWN_CONFIRM_TIMEOUT=0 still polls once).
+  [ "$(capture_count "$TMP_ROOT/$id.captures")" = 5 ] || fail "expected the pi-phase bound (4 captures) plus the single confirm poll, got $(capture_count "$TMP_ROOT/$id.captures")"
   [ ! -e "$TMP_ROOT/$id.dialog" ] || fail "dialog file appeared without a dialog"
   pass "fm-spawn: an absent trust dialog sends nothing beyond the bounded poll"
 }
@@ -224,7 +227,9 @@ EOF
   expect_code 0 "$rc" "an already-trusted worktree must spawn cleanly"
   assert_contains "$out" "spawned $id harness=pi" "already-trusted spawn did not complete"
   [ "$(enter_count "$TMP_ROOT/$id.keys")" = 4 ] || fail "already-trusted spawn sent keys"
-  [ -z "$(capture_count "$TMP_ROOT/$id.captures")" ] || fail "already-trusted spawn polled the pane (captures: $(capture_count "$TMP_ROOT/$id.captures"))"
+  # The already-trusted fast path skips the pi poll entirely; only the
+  # confirmation phase's single bounded poll reads the pane.
+  [ "$(capture_count "$TMP_ROOT/$id.captures")" = 1 ] || fail "already-trusted spawn captured beyond the single confirm poll (captures: $(capture_count "$TMP_ROOT/$id.captures"))"
   pass "fm-spawn: a path already recorded in pi's trust store skips the poll entirely"
 }
 

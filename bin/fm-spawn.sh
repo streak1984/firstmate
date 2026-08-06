@@ -129,6 +129,31 @@
 # On success prints: spawned <id> harness=<name> kind=<ship|scout|secondmate> mode=<mode> yolo=<on|off> window=<backend-target> worktree=<path>
 # mode/yolo are resolved per-project from data/projects.md for ship/scout tasks;
 # secondmate spawns record mode=secondmate, yolo=off, home=, and projects=.
+# Ship and scout spawns then run the post-launch confirmation phase, which
+# replaces the manual post-spawn peek: it polls until the worker is visibly
+# processing the brief, a parked interactive prompt is detected, or the launch
+# failed, then prints the single outcome line as the FINAL stdout line:
+#   confirm: processing <detail>   worker turn running from a harness-owned
+#                                  busy source, or kimi's delivery phase
+#                                  confirmed the brief pointer consumed
+#   confirm: dialog <detail>       a parked interactive prompt (directory
+#                                  trust, sudo, git credential, ssh
+#                                  passphrase); reported, never auto-answered
+#   confirm: failed <detail>       the endpoint is dead, or the composer still
+#                                  holds the unsubmitted launch text when the
+#                                  timeout expires
+#   confirm: unknown <detail>      no verified busy source and no positive
+#                                  processing evidence within the timeout;
+#                                  reported honestly, never guessed
+# The phase polls for FM_SPAWN_CONFIRM_TIMEOUT seconds (default 45) at a short
+# fixed interval (FM_SPAWN_CONFIRM_POLL_INTERVAL, default 0.5) and returns as
+# soon as a positive classification lands, so a fast worker adds near-zero wall
+# time. On dialog or failed it also appends a blocked: line to
+# state/<id>.status so the watcher escalates. Exit is nonzero only on failed;
+# processing, dialog, and unknown exit 0 because the worker is launched either
+# way. The phase never relaunches, never re-sends the brief, and never sends a
+# key. --secondmate spawns skip the phase entirely and keep their existing
+# behavior.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -1481,6 +1506,118 @@ kimi_wait_for_delivery() {
 kimi_spawn_fail() {  # <detail>
   printf 'failed: %s\n' "$1" >> "$STATE/$ID.status"
   echo "error: $1; inspect window $T" >&2
+  printf 'confirm: failed %s\n' "$1"
+}
+
+# The confirmation phase's parked-prompt matcher: every blocking-prompt pattern
+# the pi phase already owns (directory trust, sudo, git credential, ssh
+# passphrase), plus pi's own trust dialog for pi-family launches. The phase
+# reports a parked prompt; it never auto-answers one the existing auto-accept
+# phases did not clear.
+spawn_parked_prompt_visible() {  # <plain-pane-capture>
+  pi_other_blocking_prompt "$1" && return 0
+  case "$HARNESS" in
+    pi|pi-signed) pi_trust_dialog_visible "$1" && return 0 ;;
+  esac
+  return 1
+}
+
+# The post-launch confirmation poll (ship/scout only; the header owns the
+# contract). Prints the one-line outcome "<state> <detail>" and returns 1 only
+# on failed. The busy owner is the single source for semantic worker state: a
+# busy verdict from a harness-owned source is positive processing evidence,
+# while the pre-launch busy/fm-spawn seed alone is not (the launch text may
+# not have landed yet). A harness-owned idle inside the window is a settled
+# non-processing state, so it is reported immediately rather than polling the
+# timeout away; grok's rendered-tail verdict can read idle during startup and
+# keeps polling. Composer content is consulted only at timeout, so the launch
+# text's own submit latency never reads as failure.
+spawn_confirm_launch() {  # -> "<state> <detail>" on stdout; 1 only on failed
+  local timeout interval max i=0 verdict v src pane last_reason=no-evidence composer
+  case "$HARNESS" in
+    kimi*)
+      # The kimi phase above already confirmed the brief pointer consumed.
+      printf 'processing brief-delivered'
+      return 0
+      ;;
+  esac
+  timeout=${FM_SPAWN_CONFIRM_TIMEOUT:-45}
+  interval=${FM_SPAWN_CONFIRM_POLL_INTERVAL:-0.5}
+  max=$(awk -v t="$timeout" -v i="$interval" 'BEGIN { if (i <= 0) i = 0.5; n = int(t / i); if (n < 1) n = 1; print n }')
+  while [ "$i" -lt "$max" ]; do
+    verdict=$(fm_busy_classify_live "$BACKEND" "$T" "$HARNESS" "$ID" "$STATE")
+    v=${verdict%% *}
+    case "$v" in
+      dead)
+        printf 'failed endpoint-dead'
+        return 1
+        ;;
+      busy)
+        src=${verdict#busy }
+        if [ "$src" != fm-spawn ]; then
+          printf 'processing busy/%s' "$src"
+          return 0
+        fi
+        last_reason=no-busy-event
+        ;;
+      idle)
+        src=${verdict#idle }
+        case "$src" in
+          grok-regex) last_reason=no-busy-event ;;
+          *) printf 'unknown worker-not-processing'; return 0 ;;
+        esac
+        ;;
+      unknown)
+        src=${verdict#unknown }
+        last_reason=${src%% *}
+        ;;
+    esac
+    pane=$(spawn_capture 120)
+    if spawn_parked_prompt_visible "$pane"; then
+      printf 'dialog parked-prompt'
+      return 0
+    fi
+    i=$((i + 1))
+    [ "$i" -ge "$max" ] || sleep "$interval"
+  done
+  composer=$(fm_backend_composer_state "$BACKEND" "$T" 2>/dev/null || true)
+  # The unsubmitted-launch-text verdict is scoped to TEMPLATE launches: the
+  # launch text is only ever typed into a verified harness's own composer.
+  # A raw launch (unverified-adapter escape hatch) runs in the plain shell,
+  # whose treehouse prompt itself starts with a bare agent glyph (❯), so a
+  # shell-prompt row would falsely read as pending - and a raw launch has no
+  # verified composer contract anyway, so its honest verdict stays unknown.
+  if [ "$LAUNCH_IS_TEMPLATE" = 1 ] && [ "$composer" = pending ]; then
+    printf 'failed launch-text-unsubmitted'
+    return 1
+  fi
+  printf 'unknown %s' "$last_reason"
+  return 0
+}
+
+# Prints the confirm: outcome line as the final stdout line, appends the
+# blocked: status line the watcher escalates on, and exits 1 only on failed.
+spawn_confirm_phase() {  # ship/scout only
+  local out state detail blocked_detail
+  out=$(spawn_confirm_launch) || true
+  state=${out%% *}
+  detail=${out#* }
+  printf 'confirm: %s %s\n' "$state" "$detail"
+  case "$state" in
+    dialog)
+      printf 'blocked: an interactive prompt parked the worker for task %s; inspect window %s\n' "$ID" "$T" >> "$STATE/$ID.status"
+      ;;
+    failed)
+      case "$detail" in
+        endpoint-dead) blocked_detail="the worker endpoint died right after launch" ;;
+        launch-text-unsubmitted) blocked_detail="the launch text was never submitted" ;;
+        *) blocked_detail="the launch failed ($detail)" ;;
+      esac
+      printf 'blocked: %s for task %s; inspect window %s\n' "$blocked_detail" "$ID" "$T" >> "$STATE/$ID.status"
+      ;;
+  esac
+  [ "$state" = failed ] && exit 1
+  return 0
 }
 
 if [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
@@ -1952,3 +2089,9 @@ if [ "$KIND" = secondmate ]; then
 fi
 
 echo "spawned $ID harness=$HARNESS kind=$KIND mode=$MODE yolo=$YOLO window=$META_WINDOW worktree=$WT"
+if [ "$KIND" != secondmate ]; then
+  # Post-launch confirmation phase (ship/scout only; --secondmate spawns keep
+  # their existing behavior): prints the confirm: outcome line as the final
+  # stdout line and exits nonzero only on failed.
+  spawn_confirm_phase
+fi

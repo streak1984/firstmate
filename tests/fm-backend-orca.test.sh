@@ -32,7 +32,14 @@ echo "$n" > "$COUNT_FILE"
 if [ -f "$RESP/$n.exit" ]; then
   exit "$(cat "$RESP/$n.exit")"
 fi
-[ -f "$RESP/$n.out" ] && cat "$RESP/$n.out"
+if [ -f "$RESP/$n.out" ]; then
+  cat "$RESP/$n.out"
+else
+  # Unscripted calls (the spawn's post-launch confirmation reads) answer a
+  # benign empty-terminal read so the endpoint probe and composer verdict
+  # stay readable instead of failing on empty stdout.
+  printf '%s\n' '{"ok":true,"result":{"terminal":{"tail":[""],"limited":false}}}'
+fi
 exit 0
 SH
   chmod +x "$fb/orca"
@@ -489,10 +496,13 @@ test_spawn_writes_orca_metadata_and_launches_harness() {
   out=$( PATH="$FB:$PATH" FM_ORCA_LOG="$LOG" FM_ORCA_RESPONSES="$RESP" \
     FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$state" FM_DATA_OVERRIDE="$data" FM_CONFIG_OVERRIDE="$config" \
     FM_PROJECTS_OVERRIDE="$TMP_ROOT/unused-projects" FM_SPAWN_NO_GUARD=1 \
+    FM_SPAWN_CONFIRM_TIMEOUT=0 FM_SPAWN_CONFIRM_POLL_INTERVAL=0.01 \
     "$ROOT/bin/fm-spawn.sh" "$id" "$proj" claude --backend orca 2>&1 )
   expect_code 0 $? "fm-spawn.sh --backend orca should succeed with fake Orca"$'\n'"$out"
   assert_contains "$out" "spawned $id harness=claude kind=ship mode=no-mistakes yolo=off window=fm-$id worktree=$wt" \
     "spawn output missing Orca window/worktree summary"
+  assert_contains "$out" "confirm: unknown no-busy-event" \
+    "post-launch confirmation did not close the spawn with its honest unknown verdict"
   assert_grep "backend=orca" "$state/$id.meta" "meta missing backend=orca"
   assert_grep "window=fm-$id" "$state/$id.meta" "meta missing stable Orca window alias"
   assert_grep "terminal=term-spawn" "$state/$id.meta" "meta missing terminal handle"
