@@ -264,6 +264,37 @@ test_no_mistakes_dod_wording() {
   pass "fm-brief.sh: no-mistakes DOD keeps its apostrophe prose, now parse-safe"
 }
 
+# The no-mistakes intermediate handoff must use its own keyword: `ready:` when
+# implementation is committed and the worker stops for firstmate to instruct
+# validation, with `done:` reserved for terminal completion after the pipeline
+# reports its outcome. The old `done: {summary}` handoff collided with genuine
+# terminal completion and made the status log unable to distinguish "ready for
+# validation" from "finished".
+test_no_mistakes_handoff_uses_ready_keyword() {
+  local home id brief
+  home="$TMP_ROOT/ready-handoff-home"
+  mkdir -p "$home/data"
+  id="brief-ready-handoff-b2"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_present "$brief" "brief was not scaffolded"
+  # shellcheck disable=SC2016  # single quotes are deliberate: the backticks must stay literal
+  assert_grep 'append `ready: {summary}` to the status file and stop' "$brief" \
+    "no-mistakes brief must use the ready: keyword for the validation handoff"
+  assert_grep "Firstmate will then instruct you to run /no-mistakes to validate and ship a PR." "$brief" \
+    "no-mistakes brief lost the firstmate-instructs-validation wording"
+  # shellcheck disable=SC2016  # single quotes are deliberate: the backticks must stay literal
+  assert_grep 'The handoff is not completion: only the `done:` line after the pipeline reports its outcome below ends the task.' "$brief" \
+    "no-mistakes brief does not contrast the handoff with terminal completion"
+  # shellcheck disable=SC2016  # single quotes are deliberate: the backticks must stay literal
+  assert_grep 'append `done: PR {url} checks green`' "$brief" \
+    "no-mistakes brief must keep done: only for terminal completion after CI green"
+  # shellcheck disable=SC2016  # single quotes are deliberate: the backticks must stay literal
+  assert_no_grep 'append `done: {summary}`' "$brief" \
+    "no-mistakes brief still uses done: for the intermediate handoff"
+  pass "fm-brief.sh: no-mistakes handoff is ready:, terminal completion stays done:"
+}
+
 test_ship_project_memory_wording() {
   local home id brief
   home="$TMP_ROOT/project-memory-home"
@@ -599,8 +630,13 @@ test_pause_verb_override_renders_all_brief_scaffolds() {
         ;;
     esac
     brief="$home/data/$id/brief.md"
-    assert_grep "States: working, needs-decision, blocked, awaiting, done, failed." "$brief" \
-      "$kind brief did not render the configured pause verb in its states list"
+    if [ "$kind" = ship ]; then
+      assert_grep "States: working, needs-decision, blocked, awaiting, ready, done, failed." "$brief" \
+        "$kind brief did not render the configured pause verb in its states list"
+    else
+      assert_grep "States: working, needs-decision, blocked, awaiting, done, failed." "$brief" \
+        "$kind brief did not render the configured pause verb in its states list"
+    fi
     # shellcheck disable=SC2016 # Literal backticks and braces must remain unexpanded.
     assert_grep 'Use `awaiting: {why}`' "$brief" \
       "$kind brief did not instruct the configured pause status"
@@ -658,6 +694,7 @@ test_help_includes_entire_header
 test_ship_modes_generate_clean_briefs
 test_faster_paths_use_configured_authority_without_stacked_review
 test_no_mistakes_dod_wording
+test_no_mistakes_handoff_uses_ready_keyword
 test_ship_project_memory_wording
 test_ship_and_scout_inherit_evidence_integrity_rules
 test_herdr_lab_contract_is_explicit_and_complete

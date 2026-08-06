@@ -37,6 +37,11 @@ FM_CREW_STATE_BIN="${FM_CREW_STATE_BIN:-$_FM_CLASSIFY_LIB_DIR/fm-crew-state.sh}"
 # its away-mode classification. FM_CAPTAIN_RE overrides the whole set when a home
 # needs a custom verb vocabulary; absent, this default applies.
 #
+# The no-mistakes handoff verb `ready` is the one actionable NONterminal verb: a
+# ship worker appends `ready: {summary}` when implementation is committed and
+# stops for firstmate to instruct validation, so it surfaces like the terminal
+# verbs but never counts as completion (only a later `done:` ends the task).
+#
 # Free-text tokens (PR ready, checks green, ready in branch, merged) exist only for
 # legacy lines that lack a standard terminal verb. status_is_captain_relevant is
 # verb-aware: a nonterminal working: or paused: line never becomes captain-relevant
@@ -81,8 +86,10 @@ last_status_line() {
 }
 
 # 0 if the given (last) status line's leading verb is a real terminal captain verb
-# (done, needs-decision, blocked, failed). Free-text tokens alone never count here;
-# callers that need legacy free-text matching use status_is_captain_relevant.
+# (done, needs-decision, blocked, failed). The actionable handoff verb `ready` is
+# deliberately NOT here: it surfaces like a terminal verb (status_is_captain_relevant)
+# but the task only ends with a later `done:`. Free-text tokens alone never count
+# here; callers that need legacy free-text matching use status_is_captain_relevant.
 status_is_terminal_verb() {
   local line=$1 verb
   [ -n "$line" ] || return 1
@@ -94,10 +101,11 @@ status_is_terminal_verb() {
 }
 
 # 0 if the given (last) status line matches a captain-relevant verb.
-# Verb-aware by default: terminal verbs always match; nonterminal progress verbs
-# (working, resolved, captain-held) and paused never match from free-text prose;
-# only lines without those leading verbs may still match free-text tokens for
-# legacy bare lines such as "merged" or "PR ready".
+# Verb-aware by default: terminal verbs and the actionable no-mistakes handoff
+# `ready` always match; nonterminal progress verbs (working, resolved, captain-held)
+# and paused never match from free-text prose; only lines without those leading
+# verbs may still match free-text tokens for legacy bare lines such as "merged" or
+# "PR ready".
 status_is_captain_relevant() {
   local line=$1 verb
   [ -n "$line" ] || return 1
@@ -110,7 +118,9 @@ status_is_captain_relevant() {
   esac
   if [ -z "${FM_CAPTAIN_RE+x}" ]; then
     case "$verb" in
-      done|needs-decision|blocked|failed) return 0 ;;
+      # ready is the no-mistakes handoff: it surfaces so firstmate instructs
+      # validation, actionable like the terminal verbs but never terminal.
+      done|needs-decision|blocked|failed|ready) return 0 ;;
     esac
   fi
   printf '%s' "$line" | grep -qiE "${FM_CAPTAIN_RE:-$FM_CLASSIFY_CAPTAIN_RE_DEFAULT}"
@@ -234,7 +244,7 @@ status_open_decisions() {  # <status-file>
 }
 
 # Fold material routed-work phases in the same keyed event stream.
-# A working or declared-pause event opens or replaces one phase for its key.
+# A working, ready, or declared-pause event opens or replaces one phase for its key.
 # A later done, failed, needs-decision, blocked, or resolved event carrying that
 # key closes the phase, because it has moved to a terminal or separately tracked
 # state.
@@ -253,7 +263,7 @@ _fm_status_open_activities_stream() {
     verb=$(status_line_verb "$line")
     key=$(_fm_decision_key "$line") || continue
     case "$verb" in
-      working|"$pause")
+      working|ready|"$pause")
         note=$(status_line_note "$line")
         open=$(_fm_decision_drop "$open" "$key")
         [ -n "$open" ] && open="${open}"$'\n'

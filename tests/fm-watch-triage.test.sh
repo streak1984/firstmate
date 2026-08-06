@@ -137,6 +137,8 @@ test_stale_is_terminal_classifier() {
   stale_is_terminal "default:w1:p2" "$state" || fail "terminal herdr stale status not resolved through metadata"
   printf 'working: compiling\n' > "$state/nonterm.status"
   stale_is_terminal "sess:fm-nonterm" "$state" && fail "non-terminal stale classified terminal"
+  printf 'ready: committed, awaiting validation instruction\n' > "$state/ready.status"
+  stale_is_terminal "sess:fm-ready" "$state" || fail "ready: handoff stale not classified surfaceable"
   stale_is_terminal "sess:fm-missing" "$state" && fail "stale with no status classified terminal"
   pass "stale_is_terminal: terminal status surfaces, non-terminal and no-status are benign"
 }
@@ -147,9 +149,11 @@ test_scan_captain_relevant_statuses_classifier() {
   printf 'working: a\n' > "$state/one.status"
   printf 'blocked: no perms\n' > "$state/two.status"
   printf 'done: PR https://x/y/pull/1\n' > "$state/three.status"
+  printf 'ready: committed, awaiting validation instruction\n' > "$state/ready.status"
   out=$(scan_captain_relevant_statuses "$state")
   printf '%s' "$out" | grep -F "two.status" >/dev/null || fail "scan missed a blocked: status"
   printf '%s' "$out" | grep -F "three.status" >/dev/null || fail "scan missed a done: status"
+  printf '%s' "$out" | grep -F "ready.status" >/dev/null || fail "scan missed a ready: handoff status"
   printf '%s' "$out" | grep -F "one.status" >/dev/null && fail "scan surfaced a benign working: status"
   pass "scan_captain_relevant_statuses lists only captain-relevant statuses"
 }
@@ -177,6 +181,10 @@ test_classifier_primitives() {
     || fail "done: not a terminal verb"
   status_is_terminal_verb "working: rebased onto merged #76" \
     && fail "working: wrongly classed as terminal verb"
+  status_is_captain_relevant "ready: committed, awaiting validation instruction" \
+    || fail "ready: handoff not recognized as captain-relevant"
+  status_is_terminal_verb "ready: committed, awaiting validation instruction" \
+    && fail "ready: handoff wrongly classed as terminal verb"
   status_is_captain_relevant "merged" || fail "legacy bare merged free-text not captain-relevant"
   status_is_captain_relevant "PR ready https://x/pull/2" \
     || fail "legacy bare PR ready free-text not captain-relevant"
@@ -221,6 +229,13 @@ EOF
   printf 'working: legacy start\ndone: legacy completion\n' > "$state/legacy-activity.status"
   [ -z "$(status_open_activities "$state/legacy-activity.status")" ] \
     || fail "a legacy terminal event did not supersede the default working phase"
+  printf 'working [key=impl]: implementing\nready [key=impl]: committed, awaiting validation\n' > "$state/ready-activity.status"
+  activity=$(status_open_activities "$state/ready-activity.status")
+  printf '%s' "$activity" | grep -F $'impl\tready\tcommitted, awaiting validation' >/dev/null \
+    || fail "a ready: handoff did not open/replace the keyed activity phase"
+  printf 'working [key=impl]: implementing\nready [key=impl]: committed, awaiting validation\ndone [key=impl]: PR url checks green\n' > "$state/ready-activity.status"
+  [ -z "$(status_open_activities "$state/ready-activity.status")" ] \
+    || fail "a later done: did not close the ready: activity phase"
   pass "classifier primitives: keyed decisions and activity phases, captain relevance, window-to-task, and overrides"
 }
 

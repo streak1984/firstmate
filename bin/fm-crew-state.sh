@@ -2,7 +2,7 @@
 # fm-crew-state.sh - deterministic read of a crew's CURRENT state.
 #
 # Why this exists: state/<id>.status is an append-only, best-effort EVENT LOG.
-# Crews append only wake-worthy transitions (done/needs-decision/blocked/paused/failed)
+# Crews append only wake-worthy transitions (done/needs-decision/blocked/paused/ready/failed)
 # and nothing when they silently resume, so `tail -1` of that log reports the
 # last EVENT, not the current STATE. After firstmate resolves a needs-decision
 # or blocked and the crew resumes (responds to the gate, the pipeline fixes, it
@@ -117,7 +117,10 @@ log_last_line() {
 # the deliberate-external-wait verb (fm-classify-lib.sh's FM_CLASSIFY_PAUSED_VERB):
 # a crew with no active run and an idle pane that declared a known external wait
 # reports `paused` distinctly, so a supervisor reading this sees a declared pause
-# and its reason rather than a wedge-suspect idle.
+# and its reason rather than a wedge-suspect idle. `ready` is the no-mistakes
+# handoff: the crew committed implementation and stopped for firstmate to instruct
+# validation, so it reads `parked` (a gate wait) like needs-decision, never `done`
+# (the task is not finished).
 map_log_state() {  # <line>
   if status_is_paused "$1"; then
     echo paused
@@ -126,6 +129,7 @@ map_log_state() {  # <line>
   case "$(status_line_verb "$1")" in
     working)        echo working ;;
     needs-decision) echo parked ;;
+    ready)          echo parked ;;
     blocked)        echo blocked ;;
     done)           echo "done" ;;
     failed)         echo failed ;;

@@ -976,6 +976,27 @@ test_no_run_idle_pane_paused() {
   pass "no run + idle pane on a paused: status reports state: paused with its reason"
 }
 
+# (g'') no run + idle pane on a READY handoff -> state: parked, never done. The
+# crew committed implementation and stopped for firstmate to instruct validation,
+# so it reads as a gate wait like needs-decision, not as finished - the collision
+# that once made ready-for-validation crews indistinguishable from completed ones.
+test_no_run_idle_pane_ready() {
+  reset_fakes
+  local d; d=$(new_case ready)
+  make_repo_on_branch "$d/wt" fm/feat-ready
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-ready.meta" "window=fm:fm-feat-ready" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'ready: implemented, awaiting validation instruction\n' > "$d/state/feat-ready.status"
+  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" feat-ready
+  local out; out=$(run_crew_state "$d" feat-ready)
+  assert_contains "$out" "state: parked" "ready handoff log -> parked, never done"
+  assert_contains "$out" "source: status-log" "idle ready -> status-log source"
+  assert_contains "$out" "awaiting validation instruction" "the ready summary is carried in the detail"
+  pass "no run + idle pane on a ready: handoff reports state: parked with its summary"
+}
+
 test_no_run_idle_pane_custom_paused_verb() {
   reset_fakes
   local d; d=$(new_case custom-paused)
@@ -1342,6 +1363,7 @@ test_no_run_herdr_idle_agent_status_and_idle_record_stays_idle
 test_no_run_idle_pane_uses_log
 test_no_run_idle_pane_uses_keyed_log
 test_no_run_idle_pane_paused
+test_no_run_idle_pane_ready
 test_no_run_idle_pane_custom_paused_verb
 test_no_run_idle_secondmate_resolved_event_not_state
 test_dead_window_ignores_stale_status_log
