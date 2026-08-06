@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Send one line of literal text to a crewmate endpoint, then Enter.
-# Usage: fm-send.sh <target> <text...>
+# Usage: fm-send.sh [--verify] <target> <text...>
 #   <target> may be an exact task id, a legacy fm-<id> task label resolved
 #   through this home's state/<id>.meta, or an explicit well-formed backend
 #   target. fm-send refuses unresolved guesses rather than falling back to a
@@ -19,6 +19,44 @@
 # harness processes it when its current turn ends); the herdr backend reports
 # that as a `queued` verdict, which fm-send treats as delivered with an
 # explicit `queued (busy pane)` note instead of exiting non-zero.
+#
+# --verify classifies what happened to the message after the send path
+# completes and prints one final line: `verify: <landed|queued|dropped|unknown>
+# <one short detail>`.
+#   landed  - the composer no longer holds the message and the pane capture
+#             echoes the message text (matched on a normalized form; see the
+#             matching method below).
+#   queued  - the pane is busy and the composer state shows the busy-queue
+#             shape the submit core already recognizes: the harness accepted
+#             the message and will process it when its current turn ends
+#             (opencode keeps the text visible while busy; herdr also
+#             recognizes its native pi "Steering:" queue entry). Treat queued
+#             as delivered - never re-send on it (the 2026-08-05
+#             duplicate-steer incident).
+#   dropped - the composer still holds the text after the retry budget on an
+#             idle pane, or the pane is idle with the text nowhere in the
+#             composer or the capture.
+#   unknown - the pane could not be read conclusively, or the backend has no
+#             verification chain; reported honestly, never guessed.
+# Exit code contract: nonzero ONLY for dropped; unknown exits zero.
+# Verification NEVER re-sends under any outcome; the caller decides the next
+# step.
+# Transcript matching method: both the message and the pane capture are
+# normalized by stripping ANSI escapes, deleting the composer box border
+# glyphs (│ ┃ ║), and collapsing every whitespace run - including the
+# newlines a wrapped message spans - into a single space; a landed message
+# must appear as a substring of the normalized capture. When that misses, a
+# second pass deletes all remaining whitespace from both sides and retries,
+# which also defeats a hard terminal wrap in the middle of a long token (for
+# example a URL split across lines). Wrapped rendering therefore never hides
+# a delivered message.
+# --verify must precede the target: fm-send.sh --verify <target> <text...>.
+# It works on tmux and herdr, the backends whose composer-state and
+# busy-state owners the classification reuses; any other backend reports
+# `verify: unknown <reason>` and exits zero (bin/fm-send-verify-lib.sh owns
+# the implementation). The --key path sends no message text, so with --verify
+# it reports `verify: unknown --key path carries no message text` and exits
+# zero.
 # Submission dispatches through the target's recorded backend; the tmux adapter
 # shares its composer/submit core with the away-mode daemon via bin/fm-tmux-lib.sh.
 # Tune with FM_SEND_RETRIES (default 3) / FM_SEND_SLEEP (0.4).
@@ -59,6 +97,15 @@ usage() {
   sed -n '2,${/^#/!q;p;}' "$0" | sed 's/^# \{0,1\}//'
 }
 
+VERIFY=0
+if [ "${1:-}" = "--verify" ]; then
+  VERIFY=1
+  shift
+  if [ $# -eq 0 ]; then
+    echo "error: --verify needs a target and message; usage: fm-send.sh --verify <target> <text...>" >&2
+    exit 1
+  fi
+fi
 case "${1:-}" in
   -h|--help) usage; exit 0 ;;
 esac
@@ -86,6 +133,8 @@ fi
 
 # shellcheck source=bin/fm-backend.sh
 . "$SCRIPT_DIR/fm-backend.sh"
+# shellcheck source=bin/fm-send-verify-lib.sh
+. "$SCRIPT_DIR/fm-send-verify-lib.sh"
 # shellcheck source=bin/fm-marker-lib.sh
 . "$SCRIPT_DIR/fm-marker-lib.sh"
 # shellcheck source=bin/fm-pending-reply-lib.sh
@@ -260,6 +309,9 @@ if [ "${1:-}" = "--key" ]; then
     exit 1
   fi
   fm_send_record_interrupt "$2" || exit 1
+  if [ "$VERIFY" = 1 ]; then
+    printf 'verify: unknown --key path carries no message text to verify\n'
+  fi
 else
   MESSAGE=$*
   if [ "$MARK_FROM_FIRSTMATE" = 1 ]; then
@@ -364,4 +416,15 @@ else
   # so a peek right after finds it working. FM_SEND_SETTLE=0
   # disables it. Scoped to this path only, never the shared submit core.
   [ "${FM_SEND_SETTLE:-1}" = 0 ] || [ "$verdict" = queued ] || sleep "${FM_SEND_SETTLE:-1}"
+  # --verify: classify what happened after the send path completed and print
+  # the single final answer line. Exit nonzero only for dropped; unknown is
+  # reported honestly and never re-sends (the caller decides the next step).
+  if [ "$VERIFY" = 1 ]; then
+    result=$(fm_send_verify_classify "$TARGET_BACKEND" "$T" "$TARGET_HARNESS" "$MESSAGE" "$EXPECTED_LABEL") \
+      || result='unknown classification read failed'
+    printf 'verify: %s\n' "$result"
+    case "${result%% *}" in
+      dropped) exit 1 ;;
+    esac
+  fi
 fi
