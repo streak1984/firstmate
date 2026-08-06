@@ -15,6 +15,10 @@
 # submit or reports an inconclusive send. If a swallowed Enter is positively
 # confirmed, fm-send exits NON-ZERO so the caller knows the steer did not land
 # instead of silently leaving an unsubmitted instruction.
+# A submit against an already-busy pane can be accepted-and-queued (the
+# harness processes it when its current turn ends); the herdr backend reports
+# that as a `queued` verdict, which fm-send treats as delivered with an
+# explicit `queued (busy pane)` note instead of exiting non-zero.
 # Submission dispatches through the target's recorded backend; the tmux adapter
 # shares its composer/submit core with the away-mode daemon via bin/fm-tmux-lib.sh.
 # Tune with FM_SEND_RETRIES (default 3) / FM_SEND_SLEEP (0.4).
@@ -300,8 +304,9 @@ else
   esac
   retries=${FM_SEND_RETRIES:-3}
   sleep_s=${FM_SEND_SLEEP:-0.4}
-  # Type once, submit, verify. Only exact empty confirms delivery; every other
-  # verdict preserves the loud refusal boundary.
+  # Type once, submit, verify. Only exact empty (or the herdr busy-queue
+  # `queued` verdict) confirms delivery; every other verdict preserves the
+  # loud refusal boundary.
   if ! verdict=$(fm_backend_send_text_submit "$TARGET_BACKEND" "$T" "$MESSAGE" "$retries" "$sleep_s" "$settle" "$EXPECTED_LABEL"); then
     if [ "$PENDING_REPLY_CREATED" = 1 ] && [ -n "$PENDING_REPLY_CORR" ]; then
       fm_pending_reply_discard_undelivered "$STATE" "$PENDING_REPLY_CORR" || true
@@ -311,6 +316,15 @@ else
   fi
   case "$verdict" in
     empty)
+      ;;
+    queued)
+      # Busy-queue acceptance (herdr adapter; mirrors the tmux adapter's
+      # empty verdict for the same busy-pane case). The pane was mid-turn and
+      # queued the message for processing when its current turn ends, so the
+      # transport did deliver - the pending-reply delivery commit below still
+      # runs and the caller must not re-send (the 2026-08-05 duplicate-steering
+      # incident).
+      echo "queued (busy pane): $T accepted the message and will process it when its current turn ends" >&2
       ;;
     send-failed)
       if [ "$PENDING_REPLY_CREATED" = 1 ] && [ -n "$PENDING_REPLY_CORR" ]; then
@@ -342,10 +356,12 @@ else
       exit 1
     fi
   fi
-  # Submit landed with exact empty. Confirmation only proves the text was
-  # accepted; the harness still needs a beat to spin up the
+  # Submit landed with exact empty (or busy-queue queued). Confirmation only
+  # proves the text was accepted; the harness still needs a beat to spin up the
   # turn before its busy footer shows. Pause so an immediate peek catches the
-  # crewmate actually working instead of the stale idle pane. FM_SEND_SETTLE=0
+  # crewmate actually working instead of the stale idle pane. A queued send
+  # skips the pause: the pane was ALREADY busy when the message was accepted,
+  # so a peek right after finds it working. FM_SEND_SETTLE=0
   # disables it. Scoped to this path only, never the shared submit core.
-  [ "${FM_SEND_SETTLE:-1}" = 0 ] || sleep "${FM_SEND_SETTLE:-1}"
+  [ "${FM_SEND_SETTLE:-1}" = 0 ] || [ "$verdict" = queued ] || sleep "${FM_SEND_SETTLE:-1}"
 fi

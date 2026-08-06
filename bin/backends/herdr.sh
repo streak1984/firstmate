@@ -2055,6 +2055,14 @@ FM_BACKEND_HERDR_IDLE_RE=${FM_BACKEND_HERDR_IDLE_RE:-'^Type a message\.\.\.$'}
 # An alternation's branches are matched as whole literal byte sequences and
 # stay correct regardless of locale.
 FM_BACKEND_HERDR_BARE_PROMPT_RE=${FM_BACKEND_HERDR_BARE_PROMPT_RE:-'^(❯|›)'}
+# Pi's accepted-while-busy queue entry: pi renders every mid-turn Enter as a
+# dim "Steering: <text>" row above the composer (interactive-mode source: a
+# streaming Enter clears the editor, queues the message via
+# session.prompt(streamingBehavior=steer), and re-renders the pending list).
+# This is the STRUCTURAL prefix of the queue-entry row, never a content-diff
+# against the sent text (the 2026-07-03 grok incident is the cautionary tale
+# for content-diff verification).
+FM_BACKEND_HERDR_QUEUE_ENTRY_RE=${FM_BACKEND_HERDR_QUEUE_ENTRY_RE:-'^Steering:'}
 # Pi allows a multi-line composer between its horizontal separators. Bound the
 # structural candidate so two unrelated transcript rules with an arbitrarily
 # large region between them can never be promoted into a composer.
@@ -2223,6 +2231,60 @@ EOF
   fm_composer_classify_content "$bordered" "$stripped" "$FM_BACKEND_HERDR_IDLE_RE"
 }
 
+# fm_backend_herdr_submit_queue_evidence: structural evidence that a BUSY pane
+# accepted and queued the submitted text instead of swallowing it, read fresh
+# from the pane at submit-verification time. Echoes queued|absent|unknown.
+#
+#   queued - (1) a Pi queue-entry row whose trimmed content matches
+#            FM_BACKEND_HERDR_QUEUE_ENTRY_RE ("Steering:"), the shape pi
+#            renders for every accepted mid-turn Enter (verified from pi's own
+#            interactive-mode source: streaming Enter clears the editor and
+#            queues the message; only the bash-running warning path retains
+#            the text in the editor instead, and it renders no Steering row);
+#            or (2) for a positively non-Pi harness, the composer classifier
+#            reports pending - the bottom-most composer region holding real
+#            typed text, the opencode 1.18.4 busy-queue shape the tmux adapter
+#            verifies with fm_pane_is_busy (docs/herdr-backend.md "Active
+#            limits"). The match is STRUCTURAL - a queue-entry prefix or the
+#            composer's own pending verdict - never a content-diff against the
+#            sent text (the 2026-07-03 grok incident's cautionary tale).
+#   absent - neither shape: no queue entry, and either no composer or a
+#            cleared/empty one.
+#   unknown - the pane itself could not be captured.
+#
+# A working Pi can never report pending from fm_backend_herdr_composer_state
+# (its identity gate refuses the separated shape while working), so a pending
+# verdict here is structurally a NON-Pi composer holding retained text - the
+# tmux-verified busy-queue shape - while pi's own queue shape is proven by the
+# Steering row. That split keeps the 2026-08-05 opposite failure a true
+# negative: a pi pane whose Enter hit the bash-running warning retains the
+# typed text in the editor with no Steering row, and must not be promoted to
+# delivered.
+fm_backend_herdr_submit_queue_evidence() {  # <target> -> queued|absent|unknown
+  local target=$1 cap line trimmed
+  fm_backend_herdr_parse_target "$target" || { printf 'unknown'; return 0; }
+  cap=$(fm_backend_herdr_capture_ansi "$target" "$FM_BACKEND_HERDR_COMPOSER_LINES" 2>/dev/null \
+    || fm_backend_herdr_capture "$target" "$FM_BACKEND_HERDR_COMPOSER_LINES") || { printf 'unknown'; return 0; }
+  # (1) Pi queue-entry row. Scan the plain rows (ANSI-stripped, ghost retained)
+  # so the row's own dim styling can never hide the queue-entry prefix.
+  while IFS= read -r line; do
+    trimmed=$(fm_backend_herdr_strip_ansi "$line")
+    trimmed="${trimmed#"${trimmed%%[![:space:]]*}"}"
+    trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
+    if printf '%s' "$trimmed" | grep -qE "$FM_BACKEND_HERDR_QUEUE_ENTRY_RE"; then
+      printf 'queued'
+      return 0
+    fi
+  done < <(printf '%s\n' "$cap")
+  # (2) Non-Pi retained text: a working Pi identity can never yield pending
+  # from the shared composer classifier, so pending is structurally a non-Pi
+  # composer holding real typed text.
+  case "$(fm_backend_herdr_composer_state "$target")" in
+    pending) printf 'queued' ;;
+    *) printf 'absent' ;;
+  esac
+}
+
 # fm_backend_herdr_send_text_submit: type <text> into <target> once (raw,
 # unsubmitted, via send_literal), then submit with a named Enter key, retried
 # (Enter only, never retyped) until herdr's NATIVE agent-state (agent get)
@@ -2280,10 +2342,28 @@ EOF
 #     re-invokes this function from scratch with the same text after seeing
 #     an error, which is a human/escalation decision, not an automatic
 #     retry).
-# Echoes empty|pending|unknown|send-failed, a subset of the proof-carrying
-# submit vocabulary. Empty means confirmed submitted for every backend; how
-# each backend confirms it is an internal decision, and herdr's is no longer
-# literally "the composer read empty".
+#
+# Busy-queue fallback (2026-08-05 incident): a pi/deepseek worker mid-turn
+# accepts every Enter as a queued "Steering:" message, so the text is
+# delivered-at-turn-end while this loop can never confirm it (a working Pi
+# identity legitimately reads the composer as unknown, and native agent-state
+# is already busy at baseline). The pre-fix "unknown"/"pending" verdict made
+# every send exit non-zero and three concurrent blind retry loops queued ~30
+# duplicate Steering entries into an active validation run. Once the Enter-
+# retry budget is spent, the fallback mirrors fm_tmux_submit_enter_core's
+# fm_pane_is_busy conversion with the herdr equivalent of the same evidence:
+# a semantically busy pane (native working) that ALSO shows retained/queued
+# evidence (fm_backend_herdr_submit_queue_evidence) reports queued so the
+# caller does not re-send, while an idle pane keeps pending (genuine swallow)
+# and a busy pane WITHOUT the evidence keeps pending too - the opposite
+# not-landed direction of the same incident is never promoted to delivered.
+# Echoes empty|pending|queued|unknown|send-failed, a subset of the
+# proof-carrying submit vocabulary. Empty means confirmed submitted for every
+# backend; how each backend confirms it is an internal decision, and herdr's
+# is no longer literally "the composer read empty". Queued is the busy-queue
+# fallback verdict (see below): the pane was semantically busy and shows
+# retained/queued evidence, so the text was accepted for processing at turn
+# end - callers treat it as delivered-with-a-note and must not re-send.
 fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep> <settle>
   local target=$1 text=$2 retries=$3 sleep_s=$4 settle=$5 i=0 verdict baseline confirm_sleep
   fm_backend_herdr_parse_target "$target" || { printf 'unknown'; return 0; }
@@ -2300,6 +2380,15 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
     else
       sleep "$sleep_s"
       verdict=$(fm_backend_herdr_composer_state "$target")
+      if [ "$verdict" = unknown ] \
+         && [ "$(fm_backend_herdr_busy_state "$target")" = busy ]; then
+        # A semantically busy pane legitimately reads unknown here (a working
+        # Pi identity refuses the separated-composer shape) - that is NOT the
+        # unreadable-target case the unknown verdict protects. Treat it as
+        # pending so the Enter-retry budget is spent and the busy-queue
+        # fallback below decides with the full retry history.
+        verdict=pending
+      fi
     fi
     case "$verdict" in
       busy) printf 'empty'; return 0 ;;
@@ -2307,8 +2396,22 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
       unknown) printf 'unknown'; return 0 ;;
     esac
     i=$((i + 1))
-    [ "$i" -lt "$retries" ] || { printf 'pending'; return 0; }
+    [ "$i" -lt "$retries" ] || break
   done
+  # Enter-retry budget spent without a confirming signal. Busy-queue
+  # fallback: a semantically busy pane that ALSO shows retained/queued
+  # evidence accepted the Enter and queued the message for the current turn's
+  # end - report queued (accepted, not submitted) so the caller does not
+  # re-send and duplicate. An idle pane keeps pending (genuine swallow), and
+  # a busy pane without the evidence keeps pending too (the text is lost;
+  # never promoted).
+  if [ "$(fm_backend_herdr_busy_state "$target")" = busy ]; then
+    if [ "$(fm_backend_herdr_submit_queue_evidence "$target")" = queued ]; then
+      printf 'queued'
+      return 0
+    fi
+  fi
+  printf 'pending'
 }
 
 # fm_backend_herdr_kill: remove the task's pane, best-effort (mirrors

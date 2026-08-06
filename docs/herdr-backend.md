@@ -208,6 +208,12 @@ A bare shell prompt is never an empty agent composer.
 Away-mode injection proceeds only on an affirmative `empty` result, never on unknown.
 This prevents a dead agent pane from receiving and possibly executing an escalation as shell input.
 
+A submit against an already-busy pane is a queueing question, not a composer-clearance question.
+Once the Enter-retry budget is spent, the submit path falls back to the pane's semantic busy state plus structural queue evidence: Pi renders every accepted mid-turn Enter as a dim `Steering: <text>` row above the composer (verified from Pi's own interactive-mode source: a streaming Enter clears the editor and queues the message, and only the bash-running warning path retains the text instead, with no Steering row), so a busy Pi with a Steering row reports accepted-queued, while a busy Pi with no Steering row stays a genuine failure - whether the editor retains the typed text (the not-landed bash-running shape) or shows nothing at all; the 2026-08-05 duplicate-steering incident and its opposite not-landed case are the two measured directions.
+A positively non-Pi busy composer holding real typed text is the OpenCode 1.18.4 busy-queue shape (the tmux adapter's verified case) and is accepted-queued the same way.
+The evidence match is structural - a queue-entry prefix, never a content-diff against the sent text (the 2026-07-03 grok incident's cautionary tale).
+The adapter function `fm_backend_herdr_submit_queue_evidence` owns the evidence read.
+
 The current operational envelope starts with U+2063 and `FIRSTMATE_OP: `.
 The separate routed-request carrier uses `[fm-from-firstmate]` plus U+2063.
 U+2063 survives Herdr terminal input as text, unlike the legacy ASCII control separator that could erase the visible routing label.
@@ -279,13 +285,14 @@ Tests use thin compatibility wrappers in `tests/herdr-test-safety.sh` and never 
 - Ghost and placeholder recognition depends on ANSI de-emphasis and fails safely to pending when unavailable.
 - Mid-session secondmate liveness is not implemented.
 - OpenCode 1.18.4 can accept Enter while busy without clearing the composer.
-  The tmux backend has a busy-queue fallback, but Herdr still reports this case as submit pending and needs a separate adapter fix.
+  Both the tmux backend and the Herdr adapter have a busy-queue submit fallback; the Herdr shape and evidence are described in the "Composer and injection safety" section.
 - Only tmux and Herdr can host the away-mode supervisor terminal.
 
 ## Regression entry points
 
 ```sh
 tests/fm-backend-herdr.test.sh
+tests/fm-herdr-submit-busy.test.sh
 tests/fm-backend-herdr-smoke.test.sh
 tests/fm-backend-herdr-prune-safety-e2e.test.sh
 tests/fm-backend-herdr-respawn-idem-e2e.test.sh
