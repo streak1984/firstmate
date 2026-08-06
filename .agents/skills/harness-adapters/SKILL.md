@@ -288,8 +288,10 @@ Keep the brief as one positional argument.
 Multiple positional args become separate queued messages; `fm-spawn`'s template already does this correctly.
 
 Project trust dialog can appear on the first pi run in any not-yet-trusted directory, observed even on clean worktrees.
-Accept with Enter.
-The decision persists per path in `~/.pi/agent/trust.json`, so later spawns in the same worktree slot skip it.
+Its distinctive text includes the sentence `This allows pi to load .pi settings and resources…` and the `Do not trust` dismiss option, and `Trust` is the default cursor selection.
+`fm-spawn.sh` owns auto-accepting the dialog after every pi-family launch: it polls the pane briefly, sends Enter only on a positive text match, then confirms the dialog cleared, and appends a `blocked:` status line when the dialog persists or another interactive prompt is parked.
+Auto-accept is safe because firstmate launches pi only into its own generated disposable worktrees and secondmate homes, so trusting our own code is a formality, and the acceptance is scoped to exactly the trust dialog.
+The decision persists per path in `~/.pi/agent/trust.json`, so later spawns in the same worktree slot skip it, and `fm-spawn` skips its poll for an already-recorded path.
 
 Every pi-family launch appends `bin/pi-crew-system-prompt.md` via `--append-system-prompt`, regardless of model, because its reason-then-verify discipline counters observed optimistic self-reporting (notably on DeepSeek-class models) and is model-agnostic good behavior; that file owns the rules.
 `fm-spawn` keeps the turn-end extension in `state/`, outside the worktree, because project-local extension files make the trust gate strictly worse and pollute the project.

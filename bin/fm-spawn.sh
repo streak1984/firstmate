@@ -1341,6 +1341,97 @@ verify_spawn_autonomy_mode() {
   return 0
 }
 
+# Pi's one-time project trust dialog (verified facts in the harness-adapters
+# skill's pi section): pi shows it on the first launch in any not-yet-trusted
+# directory, before its semantic lifecycle extension can load. Every pi-family
+# launch here targets a firstmate-generated disposable worktree - or, for
+# --secondmate, the firstmate-owned secondmate home, which is just as likely
+# to be untrusted on its first pi launch because the trust store is per path -
+# so trusting our own code is a formality. fm-spawn therefore auto-accepts the
+# dialog with Enter on its default `Trust` selection, but ONLY after positively
+# matching its distinctive text; an ambiguous or absent match sends nothing,
+# and no other prompt is ever accepted.
+pi_trust_dialog_visible() {  # <plain-pane-capture> -> 0 when pi's trust dialog is showing
+  local pane=$1
+  # The dialog's explanatory sentence (matched without the trailing ellipsis
+  # so a wrapped line still matches) and its `Do not trust` dismiss option
+  # are distinctive to pi's trust dialog alone.
+  printf '%s\n' "$pane" | grep -Fq 'allows pi to load' && return 0
+  printf '%s\n' "$pane" | grep -Fq 'Do not trust' && return 0
+  return 1
+}
+
+# A parked interactive prompt that is not pi's trust dialog must surface to
+# firstmate instead of letting the worker sit silently on it. These are the
+# realistic pane blockers (another trust dialog, sudo, git credential, ssh
+# passphrase); none of them appear in the launch echo or pi's own rendering.
+pi_other_blocking_prompt() {  # <plain-pane-capture> -> 0 when a non-trust blocking prompt is showing
+  local pane=$1
+  printf '%s\n' "$pane" | grep -Fq 'Do you trust the contents of this directory?' && return 0
+  printf '%s\n' "$pane" | grep -Eq '\[sudo\] password for' && return 0
+  printf '%s\n' "$pane" | grep -Fq 'Enter passphrase for' && return 0
+  printf '%s\n' "$pane" | grep -Eq "Username for 'https?://" && return 0
+  printf '%s\n' "$pane" | grep -Eq "Password for 'https?://" && return 0
+  return 1
+}
+
+pi_trust_path_already_trusted() {  # <path> -> 0 when <path> is already recorded in pi's trust store
+  local path=$1 trust_json
+  [ -n "$path" ] || return 1
+  [ -n "${HOME:-}" ] || return 1
+  trust_json="$HOME/.pi/agent/trust.json"
+  [ -f "$trust_json" ] || return 1
+  # The store is a flat JSON object mapping trusted absolute paths to true.
+  # Match the exact JSON string including its closing quote so a shorter
+  # trusted path can never stand in for a longer one. A path recorded here
+  # is the verified persistence contract for the dialog being skipped
+  # (harness-adapters), so an already-trusted respawn stays fast and polls
+  # nothing.
+  grep -Fq "\"$path\"" "$trust_json"
+}
+
+pi_trust_dialog_handle() {
+  case "$HARNESS" in
+    pi|pi-signed) ;;
+    *) return 0 ;;
+  esac
+  if pi_trust_path_already_trusted "$WT"; then
+    return 0
+  fi
+  local pane i=0 j=0
+  local max=${FM_PI_TRUST_POLLS:-60} interval=${FM_PI_TRUST_POLL_INTERVAL:-0.5}
+  local clear_max=${FM_PI_TRUST_CLEAR_POLLS:-10} clear_interval=${FM_PI_TRUST_CLEAR_POLL_INTERVAL:-0.5}
+  pane=$(spawn_capture 120)
+  while [ "$i" -lt "$max" ]; do
+    if pi_trust_dialog_visible "$pane"; then
+      # Accept the dialog's default `Trust` selection with exactly one Enter,
+      # then confirm it cleared. This is the only key this handler ever sends.
+      spawn_send_key "$T" Enter
+      j=0
+      while [ "$j" -lt "$clear_max" ]; do
+        pane=$(spawn_capture 120)
+        if ! pi_trust_dialog_visible "$pane"; then
+          return 0
+        fi
+        j=$((j + 1))
+        [ "$j" -ge "$clear_max" ] || sleep "$clear_interval"
+      done
+      printf 'blocked: pi trust dialog did not clear after accept for task %s; inspect window %s\n' "$ID" "$T" >> "$STATE/$ID.status"
+      echo "error: pi trust dialog persisted after accept in window $T; inspect and handle it" >&2
+      exit 1
+    fi
+    if pi_other_blocking_prompt "$pane"; then
+      printf 'blocked: a non-trust interactive prompt parked the pi worker for task %s; inspect window %s\n' "$ID" "$T" >> "$STATE/$ID.status"
+      echo "error: a non-trust interactive prompt is blocking pi in window $T; inspect and handle it" >&2
+      exit 1
+    fi
+    i=$((i + 1))
+    [ "$i" -ge "$max" ] || sleep "$interval"
+    pane=$(spawn_capture 120)
+  done
+  return 0
+}
+
 kimi_capture() {
   fm_backend_capture "$BACKEND" "$T" 120 "$W" 2>/dev/null || true
 }
@@ -1825,6 +1916,7 @@ if [ "${HERDR_PROJECTED:-0}" -eq 1 ]; then
 fi
 spawn_send_key "$T" Enter
 verify_spawn_autonomy_mode
+pi_trust_dialog_handle
 if [ "$HARNESS" = kimi ]; then
   if ! kimi_wait_for_ready; then
     kimi_spawn_fail "kimi did not show a verified ready signal before brief delivery"
