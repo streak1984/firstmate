@@ -123,7 +123,7 @@ test_no_profile_keeps_claude_profile_defaults() {
   assert_meta_profile "$HOME_DIR/state/$id.meta" claude default default
 
   launch=$(cat "$LAUNCH_LOG")
-  expected="CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false claude --dangerously-skip-permissions \"\$('${ROOT}/bin/fm-operational-input.sh' encode launch-brief < '$HOME_DIR/data/$id/brief.md')\""
+  expected="GIT_EDITOR=true GIT_SEQUENCE_EDITOR=true CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false claude --dangerously-skip-permissions \"\$('${ROOT}/bin/fm-operational-input.sh' encode launch-brief < '$HOME_DIR/data/$id/brief.md')\""
   [ "$launch" = "$expected" ] || fail "no-profile claude launch did not use the canonical launch kind"$'\n'"expected: $expected"$'\n'"actual:   $launch"
   pass "no --model/--effort records defaults and types the claude launch instructions"
 }
@@ -356,8 +356,44 @@ test_active_dispatch_profile_allows_raw_launch_command() {
   assert_contains "$out" "spawned $id harness=custom-agent" "spawn did not report raw command harness"
   assert_meta_profile "$HOME_DIR/state/$id.meta" custom-agent default default
   launch=$(cat "$LAUNCH_LOG")
-  [ "$launch" = "custom-agent --flag" ] || fail "raw launch command changed"$'\n'"actual: $launch"
+  [ "$launch" = "GIT_EDITOR=true GIT_SEQUENCE_EDITOR=true custom-agent --flag" ] \
+    || fail "raw launch command changed"$'\n'"actual: $launch"
   pass "active crew-dispatch profile allows the raw launch-command escape hatch"
+}
+
+test_crew_launch_disables_interactive_git_editor() {
+  local rec id scout_id sm_id sm out status launch
+  id=profile-git-editor-z20
+  scout_id=profile-git-editor-scout-z21
+  sm_id=profile-git-editor-sm-z22
+  rec=$(make_spawn_case profile-git-editor codex "$id" "$scout_id")
+  read_case_record "$rec"
+  sm="$CASE_DIR/secondmate-home"
+  make_seeded_secondmate_home "$sm" "$sm_id"
+
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR")
+  status=$?
+  expect_code 0 "$status" "crew spawn should succeed"
+  launch=$(cat "$LAUNCH_LOG")
+  assert_contains "$launch" "GIT_EDITOR=true GIT_SEQUENCE_EDITOR=true codex" \
+    "crew launch did not disable git's interactive editor"
+
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$scout_id" "$PROJ_DIR" --scout)
+  status=$?
+  expect_code 0 "$status" "scout spawn should succeed"
+  launch=$(cat "$LAUNCH_LOG")
+  assert_contains "$launch" "GIT_EDITOR=true GIT_SEQUENCE_EDITOR=true codex" \
+    "scout launch did not disable git's interactive editor"
+
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$sm_id" "$sm" --secondmate)
+  status=$?
+  expect_code 0 "$status" "secondmate spawn should succeed"
+  launch=$(cat "$LAUNCH_LOG")
+  assert_contains "$launch" "GIT_EDITOR=true GIT_SEQUENCE_EDITOR=true" \
+    "secondmate launch did not disable git's interactive editor"
+  assert_contains "$launch" "codex --dangerously-bypass-approvals-and-sandbox" \
+    "secondmate launch lost its codex command"
+  pass "crew, scout, and secondmate launches disable git's interactive editor"
 }
 
 test_claude_threads_model_and_effort() {
@@ -684,6 +720,7 @@ test_active_dispatch_profile_requires_explicit_harness_for_scout
 test_active_dispatch_profile_allows_explicit_harness
 test_active_dispatch_profile_allows_positional_harness
 test_active_dispatch_profile_allows_raw_launch_command
+test_crew_launch_disables_interactive_git_editor
 test_claude_threads_model_and_effort
 test_codex_threads_model_and_effort
 test_codex_threads_max_effort

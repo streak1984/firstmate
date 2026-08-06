@@ -1779,6 +1779,20 @@ if [ "$KIND" = secondmate ]; then
   sq_primary_home=$(shell_quote "$FM_HOME")
   LAUNCH="FM_ROOT_OVERRIDE= FM_STATE_OVERRIDE= FM_DATA_OVERRIDE= FM_PROJECTS_OVERRIDE= FM_CONFIG_OVERRIDE= FM_PUBLIC_FOLLOWUP_PRIMARY_HOME=$sq_primary_home FM_HOME=$sq_home $LAUNCH"
 fi
+# Every crew pane inherits the captain's EDITOR (this machine sets
+# EDITOR="zed --wait"), so an interactive git editor - a commit message or an
+# interactive-rebase todo list - would spawn a GUI window no agent can close and
+# stall the crew for hours (2026-08-06 incident). GIT_EDITOR=true makes git run
+# `true` as the editor: --continue flows (rebase, cherry-pick, revert, merge)
+# proceed with their pre-filled message, and a bare `git commit` with no message
+# aborts loudly instead of hanging. GIT_SEQUENCE_EDITOR=true accepts
+# interactive-rebase todo lists unchanged. Both win over core.editor, VISUAL,
+# and EDITOR by git's own precedence, and are scoped to this launch: the
+# captain's shell config and git config are never touched. This is the same
+# per-launch env prefix mechanism as CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false
+# above - the launched agent process inherits the assignments and every git
+# subprocess it spawns inherits them in turn.
+LAUNCH="GIT_EDITOR=true GIT_SEQUENCE_EDITOR=true $LAUNCH"
 # A login shell that predates a home-manager PATH change can export
 # __HM_SESS_VARS_SOURCED without the newer variables, making every descendant
 # skip the current session-vars file. Guarantee the fleet toolchain dirs in the
