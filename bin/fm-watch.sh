@@ -32,14 +32,23 @@
 #                          closer look instead of another routine supervision
 #                          resume. Unless afk is active. A genuinely busy pane
 #                          (window_is_busy true) is exempt from the above, but
-#                          only up to BUSY_TURN_MAX_SECS with no completed turn
-#                          (state/<id>.turn-ended, or the spawn record before any
-#                          turn completes); past that bound busy_turn_over_age
-#                          routes it through the same wedge timer, so it surfaces
-#                          with the identical "stale: ..." reason, escalation
-#                          count, and demand-deep-inspection marker, for human
-#                          inspection only - never an automatic interrupt,
-#                          signal, or restart of the worker or its tool process.
+#                          only up to two progress bounds, both delivered through
+#                          the same wedge timer with a DISTINGUISHING reason:
+#                          overlong-turn (busy past BUSY_TURN_MAX_SECS with no
+#                          completed turn - state/<id>.turn-ended, or the spawn
+#                          record before any turn completes - reason carries
+#                          "no completed turn") and never-started (busy source
+#                          still the fm-spawn launch seed with no first turn ever
+#                          recorded past NEVER_STARTED_SECS - reason carries
+#                          "never started"). A declared pause or captain-held
+#                          wait exempts both, and an actively-running no-mistakes
+#                          run-step (a pipeline-owned wait) exempts the
+#                          overlong-turn bound. Past a bound the pane is routed
+#                          through the same wedge timer, so it surfaces with the
+#                          stale reason, escalation count, and
+#                          demand-deep-inspection marker, for human inspection
+#                          only - never an automatic interrupt, signal, or
+#                          restart of the worker or its tool process.
 #   check: <script>: <out> authenticated check output, always actionable
 #   check: rejected unauthenticated state checks: <paths>
 #                          unsafe state checks were refused without execution
@@ -138,14 +147,26 @@ STALE_ESCALATE_SECS=${FM_STALE_ESCALATE_SECS:-240}  # idle secs before a provabl
 # footer changes every poll. BUSY_TURN_MAX_SECS bounds how long any busy pane
 # may go with no completed turn: once its task's
 # state/<id>.turn-ended marker (or, before any turn has completed, the task's
-# spawn record) is this old, busy_turn_over_age routes the pane through the
-# same STALE_ESCALATE_SECS-paced wedge_timer_check used for a provably-working
-# non-busy stale, so it escalates via the existing stale reason, escalation
-# counter, and demand-deep-inspection marker for human inspection only - never
-# an automatic interrupt, signal, or restart. A completed turn touches
-# turn-ended and resets the age. Set generously above any legitimate interval
-# between completed turns, including long tool calls, builds, or test runs.
-BUSY_TURN_MAX_SECS=${FM_BUSY_TURN_MAX_SECS:-3600}
+# spawn record) is this old, the overlong-turn arm of busy_progress_escalation
+# routes the pane through the same STALE_ESCALATE_SECS-paced
+# wedge_timer_check used for a provably-working non-busy stale, so it escalates
+# via the existing stale reason, escalation counter, and demand-deep-inspection
+# marker for human inspection only - never an automatic interrupt, signal, or
+# restart. A completed turn touches turn-ended and resets the age. An active
+# no-mistakes run-step (a pipeline-owned wait) and a declared pause/captain-held
+# wait are exempt; the run-step read happens only at escalation rounds, never
+# every poll. Set generously above any legitimate interval between completed
+# turns outside a pipeline, including long tool calls, builds, or test runs.
+BUSY_TURN_MAX_SECS=${FM_BUSY_TURN_MAX_SECS:-1200}
+# A freshly spawned worker whose busy source is still the fm-spawn launch seed
+# has never handed off to its harness lifecycle (a first-run trust dialog, a
+# launch failure): pi's semantic extension loads only AFTER trust is granted,
+# so the seed reads busy indefinitely. NEVER_STARTED_SECS bounds that state: a
+# spawn-marker busy task with no turn-ended file EVER touched past this age
+# routes through the same wedge timer with a "never started" reason. Short by
+# design: a never-started worker produces nothing, so it must surface within
+# minutes, not hours.
+NEVER_STARTED_SECS=${FM_NEVER_STARTED_SECS:-120}
 # A crew that declared a pause is idling on a known external wait, so its stale
 # pane is absorbed rather than wedge-escalated.
 # A captain-held or paused crew whose agent has confidently exited uses the same
@@ -176,24 +197,35 @@ hash_pane() {
   if command -v md5 >/dev/null 2>&1; then md5 -q; else md5sum | cut -d' ' -f1; fi
 }
 
-# window_is_busy: 0 (busy) iff the task's harness is PROVABLY working, through
-# the semantic busy-state contract (bin/fm-busy-lib.sh). Only an exact busy
-# verdict returns 0: idle, unknown, and dead all return 1, so a converted
-# adapter whose semantic state is missing, malformed, stale, or unverified is
-# treated as not-provably-working and surfaces rather than being absorbed.
-# <tail40> is the same bounded capture already read for hashing and is
-# consumed only by the Grok-scoped fallback inside the contract.
-window_is_busy() {  # <window> <tail40>
-  local w=$1 tail40=$2 task meta verdict
+# window_busy_class: the task's semantic busy classification
+# "<verdict> <source>" from the one contract owner (bin/fm-busy-lib.sh),
+# resolved from recorded metadata or falling back to the window's own
+# backend/harness when no meta exists. Fail-open: missing, malformed, stale,
+# or untrusted records classify unknown/dead, never busy, so an unreadable
+# state can never manufacture a progress alarm. <tail40> is the same bounded
+# capture already read for hashing and is consumed only by the Grok-scoped
+# fallback inside the contract.
+window_busy_class() {  # <window> <tail40>
+  local w=$1 tail40=$2 task meta
   task=$(window_to_task "$w" "$STATE")
   meta="$STATE/$task.meta"
   if [ -n "$task" ] && [ -f "$meta" ]; then
-    verdict=$(fm_busy_classify_meta "$meta" "$task" "$STATE" "$tail40")
+    fm_busy_classify_meta "$meta" "$task" "$STATE" "$tail40"
   else
-    verdict=$(fm_busy_classify "$(window_backend "$w")" "$w" "$(window_harness "$w")" \
-      "${task:-unknown}" "$STATE" "$tail40")
+    fm_busy_classify "$(window_backend "$w")" "$w" "$(window_harness "$w")" \
+      "${task:-unknown}" "$STATE" "$tail40"
   fi
-  [ "${verdict%% *}" = busy ]
+}
+
+# window_is_busy: 0 (busy) iff the task's harness is PROVABLY working, through
+# window_busy_class. Only an exact busy verdict returns 0: idle, unknown, and
+# dead all return 1, so a converted adapter whose semantic state is missing,
+# malformed, stale, or unverified is treated as not-provably-working and
+# surfaces rather than being absorbed.
+window_is_busy() {  # <window> <tail40>
+  local class
+  class=$(window_busy_class "$1" "$2")
+  [ "${class%% *}" = busy ]
 }
 
 window_kind() {
@@ -267,11 +299,18 @@ FM_WEDGE_DEMAND_INSPECT_COUNT=${FM_WEDGE_DEMAND_INSPECT_COUNT:-3}
 # watcher restart between recording the hash and recording the timer), or
 # escalates once STALE_ESCALATE_SECS have elapsed. Never re-reads the crew
 # state (the costly check already ran once, at classification time). Shared by
-# both places a hash can be absorbed this way: the plain non-terminal path,
-# and the stale_is_terminal-overridden path (a captain-relevant status-log
-# line that an active run/busy pane outranked).
-wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-file>
-  local win=$1 since_file=$2 label=$3 escalation_file=$4 since age n reason
+# every place a hash can be absorbed this way: the plain non-terminal path,
+# the stale_is_terminal-overridden path (a captain-relevant status-log line
+# that an active run/busy pane outranked), and the busy progress alarms
+# (busy_progress_escalation), which pass an optional distinguishing <cause>
+# phrase for the wake reason and an optional <reverify-fn> that re-verifies
+# the cause at escalation time: when it stops holding (a pipeline-owned wait
+# or declared pause began, or a turn completed), the wake is deferred and the
+# timer restarts instead of escalating, so the costly crew-state read happens
+# only at escalation rounds, never every poll.
+wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-file> [cause] [reverify-fn]
+  local win=$1 since_file=$2 label=$3 escalation_file=$4
+  local cause=${5-} reverify=${6-} since age n reason
   since=$(cat "$since_file" 2>/dev/null || true)
   case "$since" in
     ''|*[!0-9]*)
@@ -281,11 +320,22 @@ wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-
     *)
       age=$(( $(date +%s) - since ))
       if [ "$age" -ge "$STALE_ESCALATE_SECS" ]; then
+        if [ -n "$reverify" ] && ! "$reverify" "$win"; then
+          # The escalation cause no longer provably holds: defer the wake and
+          # restart the timer so the next escalation round re-verifies.
+          date +%s > "$since_file"
+          triage_log "absorbed $label escalation recheck (cause cleared): $win"
+          return 0
+        fi
         n=$(( $(cat "$escalation_file" 2>/dev/null || echo 0) + 1 ))
         echo "$n" > "$escalation_file"
-        reason="stale: $win (idle ${age}s, possible wedge, escalation $n)"
+        if [ -n "$cause" ]; then
+          reason="stale: $win ($cause, escalation $n)"
+        else
+          reason="stale: $win (idle ${age}s, possible wedge, escalation $n)"
+        fi
         if [ "$n" -ge "$FM_WEDGE_DEMAND_INSPECT_COUNT" ]; then
-          reason="stale: $win (idle ${age}s, possible wedge, escalation $n, demand-deep-inspection: same pane has wedge-escalated $n times in a row - do not re-absorb on the run-step/pane state alone)"
+          reason="$reason, demand-deep-inspection: same pane has wedge-escalated $n times in a row - do not re-absorb on the run-step/pane state alone"
         fi
         fm_wake_append stale "$win" "$reason" || exit 1
         rm -f "$since_file"
@@ -295,18 +345,101 @@ wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-
   esac
 }
 
-# busy_turn_over_age: 0 iff <task>'s latest completed-turn marker is at least
-# BUSY_TURN_MAX_SECS old. Ages the per-task turn-ended marker, the harness-neutral
-# signal every verified harness's turn-end hook touches; before any turn has
-# completed, ages the task's spawn record instead so a fresh task still gets a
-# bound. The caller checks that the pane is busy and routes a crossed bound
-# through the existing wedge_timer_check, never anything that touches the
-# worker itself.
-busy_turn_over_age() {  # <task>
+# busy_turn_anchor_age: age of <task>'s completed-turn anchor - the per-task
+# turn-ended marker, the harness-neutral signal every verified harness's
+# turn-end hook touches; before any turn has completed, the task's spawn
+# record instead so a fresh task still gets a bound.
+busy_turn_anchor_age() {  # <task>
   local task=$1 f
   f="$STATE/$task.turn-ended"
   [ -e "$f" ] || f="$STATE/$task.meta"
-  [ "$(age_of "$f")" -ge "$BUSY_TURN_MAX_SECS" ]
+  age_of "$f"
+}
+
+# busy_turn_over_age: 0 iff <task>'s completed-turn anchor is at least
+# BUSY_TURN_MAX_SECS old. The caller checks that the pane is busy and routes a
+# crossed bound through the existing wedge_timer_check, never anything that
+# touches the worker itself.
+busy_turn_over_age() {  # <task>
+  [ "$(busy_turn_anchor_age "$1")" -ge "$BUSY_TURN_MAX_SECS" ]
+}
+
+# busy_never_started: 0 iff <task> is still on its spawn marker: NO completed
+# turn has EVER been recorded (state/<id>.turn-ended absent) and the spawn
+# record is older than NEVER_STARTED_SECS. The caller additionally requires
+# the busy source to be exactly fm-spawn (the launch-brief seed written by
+# fm-spawn), so a loaded harness lifecycle never trips this alarm. Fail-open:
+# a missing meta or an existing turn-ended returns 1, so an absent marker can
+# never manufacture the alarm.
+busy_never_started() {  # <task>
+  local task=$1
+  [ -e "$STATE/$task.turn-ended" ] && return 1
+  [ -e "$STATE/$task.meta" ] || return 1
+  [ "$(age_of "$STATE/$task.meta")" -ge "$NEVER_STARTED_SECS" ]
+}
+
+# crew_is_run_stepping: 0 iff <id>'s authoritative current state is an
+# actively-working no-mistakes step (fm-crew-state source run-step) - the
+# pipeline-owned wait that legitimately holds a busy pane past the turn-age
+# bound while the run's own process drives the work. Reads the same verdict
+# line crew_absorb_class in fm-classify-lib.sh owns and isolates the run-step
+# arm, which that predicate deliberately collapses with pane-busy. Cost
+# discipline mirrors the classifier: this read is made only at busy escalation
+# rounds (via busy_turn_cause_holds), never every poll.
+crew_is_run_stepping() {  # <id>
+  local id=$1 line state src
+  [ -n "$id" ] || return 1
+  line=$("$FM_CREW_STATE_BIN" "$id" 2>/dev/null) || true
+  case "$line" in state:*) ;; *) return 1 ;; esac
+  state=${line#state: }; state=${state%% *}
+  [ "$state" = working ] || return 1
+  src=${line#*source: }; src=${src%% *}
+  [ "$src" = run-step ]
+}
+
+# busy_turn_cause_holds: the escalation-round reverify for the overlong-turn
+# timer. 0 only while the overlong-turn cause still provably holds: the task
+# has no fresh completed turn, has not declared a pause/captain-held wait, and
+# is not on an actively-working no-mistakes run-step. Returning 1 defers the
+# wake (wedge_timer_check restarts the timer) instead of escalating, so a
+# pipeline-owned wait or a pause that begins mid-timer never wakes firstmate.
+busy_turn_cause_holds() {  # <window>
+  local w=$1 task last
+  task=$(window_to_task "$w" "$STATE")
+  [ -n "$task" ] || return 1
+  last=$(last_status_line "$STATE/$task.status")
+  status_is_paused_or_captain_held "$last" && return 1
+  crew_is_run_stepping "$task" && return 1
+  busy_turn_over_age "$task"
+}
+
+# busy_progress_escalation: the per-poll decision for a busy pane. A busy pane
+# is otherwise unconditional proof of liveness, so these two progress bounds
+# escalate it for human inspection only, both through the existing
+# wedge_timer_check with a DISTINGUISHING reason:
+#   - never-started: busy source is still the fm-spawn launch seed (the harness
+#     lifecycle never loaded, e.g. a first-run trust dialog), no turn has EVER
+#     completed, and the spawn is past NEVER_STARTED_SECS;
+#   - overlong-turn: the completed-turn anchor is past BUSY_TURN_MAX_SECS,
+#     unless the task currently drives a no-mistakes run-step (a pipeline-owned
+#     wait) or declares a pause/captain-held wait.
+# A declared pause/captain-held wait exempts BOTH bounds. Anything unreadable
+# or missing falls through to today's behavior: the wedge bookkeeping is
+# cleared and the plain stale path owns the pane.
+busy_progress_escalation() {  # <window> <task> <last-status-line> <busy-source> <ssf> <ewf>
+  local w=$1 task=$2 last=$3 source=$4 ssf=$5 ewf=$6
+  if status_is_paused_or_captain_held "$last"; then
+    rm -f "$ssf" "$ewf"
+  elif [ "$source" = fm-spawn ] && busy_never_started "$task"; then
+    wedge_timer_check "$w" "$ssf" "never started (busy, no first turn)" "$ewf" \
+      "busy $(busy_turn_anchor_age "$task")s, never started - no first turn ever, possible wedge"
+  elif busy_turn_over_age "$task"; then
+    wedge_timer_check "$w" "$ssf" "busy (no completed turn)" "$ewf" \
+      "busy $(busy_turn_anchor_age "$task")s, no completed turn, possible wedge" \
+      busy_turn_cause_holds
+  else
+    rm -f "$ssf" "$ewf"
+  fi
 }
 
 # Absorb a stale pane under a declared external-wait pause (paused:) or a
@@ -880,12 +1013,13 @@ EOF
     ewf="$STATE/.wedge-escalations-$key"
     pf="$STATE/.paused-$key"   # flag: this key's stale is using the bounded pause cadence
     prev=$(cat "$hf" 2>/dev/null || true)
-    # Busy match: a backend's native semantic state when available (herdr), else
-    # the last 6 non-blank lines only (the TUI footer area, where every verified
-    # harness renders its busy indicator) so busy-looking strings in displayed
-    # content cannot suppress stale detection. Read once per window per poll and
-    # reused below so a busy verdict is consistent within one cycle.
-    if window_is_busy "$w" "$tail40"; then busy_now=0; else busy_now=1; fi
+    # Busy verdict: the semantic busy-state contract (bin/fm-busy-lib.sh), read
+    # once per window per poll and reused below so a busy verdict is consistent
+    # within one cycle. The source token rides along so the progress alarms can
+    # tell a spawn-seed busy (never started) from a real harness turn.
+    busy_class=$(window_busy_class "$w" "$tail40")
+    if [ "${busy_class%% *}" = busy ]; then busy_now=0; else busy_now=1; fi
+    busy_source=${busy_class#* }
     if [ "$h" = "$prev" ]; then
       n=$(( $(cat "$cf" 2>/dev/null || echo 0) + 1 ))
       echo "$n" > "$cf"
@@ -990,10 +1124,10 @@ EOF
         fi
       else
         # Pane busy or not yet stably stale: reset pending escalation bookkeeping,
-        # unless a genuinely busy pane has gone too long with no completed turn -
-        # then route it through the same wedge timer instead of erasing it.
-        if [ "$busy_now" -eq 0 ] && busy_turn_over_age "$task"; then
-          wedge_timer_check "$w" "$ssf" "busy (no completed turn)" "$ewf"
+        # unless a busy pane has crossed a progress bound - then route it through
+        # the same wedge timer instead of erasing it.
+        if [ "$busy_now" -eq 0 ]; then
+          busy_progress_escalation "$w" "$task" "$last" "$busy_source" "$ssf" "$ewf"
         else
           rm -f "$ssf" "$ewf"
         fi
@@ -1004,8 +1138,8 @@ EOF
     else
       printf '%s' "$h" > "$hf"
       echo 0 > "$cf"
-      if [ "$busy_now" -eq 0 ] && busy_turn_over_age "$task"; then
-        wedge_timer_check "$w" "$ssf" "busy (no completed turn)" "$ewf"
+      if [ "$busy_now" -eq 0 ]; then
+        busy_progress_escalation "$w" "$task" "$last" "$busy_source" "$ssf" "$ewf"
       else
         rm -f "$ssf" "$ewf"
       fi

@@ -109,6 +109,12 @@ record_pi_busy() {  # <state-dir> <id>
     --source pi-ext --event agent-start
 }
 
+record_spawn_busy() {  # <state-dir> <id>
+  # fm-busy-event.sh arm already seeds exactly the spawn marker fm-spawn.sh
+  # writes: state=busy, source=fm-spawn, event=launch-brief at seq=1.
+  "$ROOT/bin/fm-busy-event.sh" arm "$1" "$2" >/dev/null
+}
+
 reap() { kill "$1" 2>/dev/null || true; wait "$1" 2>/dev/null || true; }
 
 # --- pure classifier predicates (fm-classify-lib.sh) ------------------------
@@ -1307,11 +1313,268 @@ test_busy_pane_repeated_escalation_reaches_demand_deep_inspection() {
   pass "repeated busy turn-age escalations reuse the existing escalation counter and demand deep inspection at the threshold"
 }
 
+# --- busy progress alarms: overlong-turn and never-started ------------------
+# The 2026-08-06 captain-reported pattern. Two busy-but-not-progressing
+# conditions are invisible to pane staleness (a repainting footer changes the
+# hash every poll) and to the plain busy exemption (the harness honestly
+# reports busy): an in-call hang whose last completed turn ages past
+# BUSY_TURN_MAX_SECS, and a never-started worker still sitting on the
+# spawn-marker busy seed (pi's lifecycle extension loads only after first-run
+# trust is granted). Both escalate through the existing wedge timer with a
+# distinguishing reason; a declared pause or captain-held wait exempts both,
+# and an actively-running no-mistakes run-step (a pipeline-owned wait) exempts
+# the overlong-turn bound. Never-started additionally requires the busy source
+# to be exactly fm-spawn with no turn-ended file ever touched.
+
+test_never_started_below_threshold_absorbed() {
+  local dir state fakebin out capture_file window key pid
+  dir=$(make_case never-started-below); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"; window="test:fm-fresh-spawn"
+  printf 'First-run trust dialog, waiting...' > "$capture_file"
+  printf 'window=%s\nkind=ship\nharness=pi\n' "$window" > "$state/fresh-spawn.meta"
+  record_spawn_busy "$state" fresh-spawn
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_NEVER_STARTED_SECS=999 FM_BUSY_TURN_MAX_SECS=999 FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  if ! wait_live "$pid" 30; then
+    reap "$pid"; fail "a fresh spawn-marker busy worker below the never-started bound was escalated: $(cat "$out")"
+  fi
+  [ ! -s "$out" ] || fail "a fresh spawn-marker busy worker printed a wake reason"
+  [ ! -e "$state/.stale-since-$key" ] || fail "a fresh spawn-marker busy worker started a wedge timer"
+  reap "$pid"
+  pass "a never-started worker below the spawn-age bound remains absorbed"
+}
+
+test_never_started_fires_past_threshold() {
+  local dir state fakebin out capture_file window key pid
+  dir=$(make_case never-started-over); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"; window="test:fm-stuck-spawn"
+  printf 'First-run trust dialog, waiting...' > "$capture_file"
+  printf 'window=%s\nkind=ship\nharness=pi\n' "$window" > "$state/stuck-spawn.meta"
+  record_spawn_busy "$state" stuck-spawn
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  # No turn-ended file has EVER been touched, and the spawn is old.
+  touch -t 200001010000 "$state/stuck-spawn.meta"
+
+  # Phase A: past the never-started bound, the first sight absorbs and starts
+  # the wedge timer (mirrors the overlong-turn Phase A shape).
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_NEVER_STARTED_SECS=1 FM_BUSY_TURN_MAX_SECS=999 FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  if ! wait_live "$pid" 30; then
+    reap "$pid"; fail "never-started past the bound escalated before the wedge threshold: $(cat "$out")"
+  fi
+  [ -s "$state/.stale-since-$key" ] || fail "never-started past the bound did not start a wedge timer"
+  reap "$pid"
+
+  # Phase B: backdate the wedge timer; the next poll escalates with the
+  # distinguishing never-started reason.
+  echo $(( $(date +%s) - 500 )) > "$state/.stale-since-$key"
+  : > "$out"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_NEVER_STARTED_SECS=1 FM_BUSY_TURN_MAX_SECS=999 FM_STALE_ESCALATE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 40 || fail "never-started did not wedge-escalate past the spawn-age bound"
+  grep -F "stale: $window" "$out" >/dev/null || fail "never-started escalation did not print the stale wake"
+  grep -F "never started" "$out" >/dev/null || fail "never-started escalation omitted its distinguishing reason"
+  grep -F "possible wedge" "$out" >/dev/null || fail "never-started escalation did not flag a possible wedge"
+  pass "a spawn-marker busy worker with no first turn ever escalates past the short bound with a distinguishing reason"
+}
+
+test_never_started_ignored_after_first_turn_or_loaded_source() {
+  local dir state fakebin out capture_file window key pid
+  # Case 1: a completed turn was recorded (turn-ended exists) - the worker is
+  # not "never started", so the long overlong-turn bound governs.
+  dir=$(make_case never-started-after-turn); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"; window="test:fm-post-turn"
+  printf 'Working...' > "$capture_file"
+  printf 'window=%s\nkind=ship\nharness=pi\n' "$window" > "$state/post-turn.meta"
+  record_spawn_busy "$state" post-turn
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  touch "$state/post-turn.turn-ended"
+  prime_turnend_seen "$state/post-turn.turn-ended"
+  touch -t 200001010000 "$state/post-turn.meta"
+  # Fresh turn-ended: neither bound is crossed (the turn anchor is fresh).
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_NEVER_STARTED_SECS=1 FM_BUSY_TURN_MAX_SECS=999 FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  if ! wait_live "$pid" 30; then
+    reap "$pid"; fail "a worker with a completed turn was treated as never started: $(cat "$out")"
+  fi
+  [ ! -e "$state/.stale-since-$key" ] || fail "a worker with a fresh completed turn started a progress timer"
+  reap "$pid"
+
+  # Case 2: the harness lifecycle loaded (busy source pi-ext, not fm-spawn): a
+  # long first turn is legitimate until the overlong-turn bound; the
+  # never-started short bound must NOT apply. (The meta is old, so the bound
+  # must be pushed out - a pre-first-turn meta is the overlong anchor too, and
+  # the overlong reason is asserted separately in the pipeline-exemption test.)
+  dir=$(make_case never-started-loaded); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"; window="test:fm-loaded"
+  printf 'Working... (long first turn)' > "$capture_file"
+  printf 'window=%s\nkind=ship\nharness=pi\n' "$window" > "$state/loaded.meta"
+  record_pi_busy "$state" loaded
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  touch -t 200001010000 "$state/loaded.meta"
+
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_NEVER_STARTED_SECS=1 FM_BUSY_TURN_MAX_SECS=999999999 FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  if ! wait_live "$pid" 30; then
+    reap "$pid"; fail "a harness-busy first turn was treated as never started: $(cat "$out")"
+  fi
+  [ ! -e "$state/.stale-since-$key" ] || fail "a harness-busy first turn under the long bound started a progress timer"
+  reap "$pid"
+  pass "never-started fires only for spawn-marker busy with no turn-ended ever; a loaded harness or a completed turn falls to the long bound"
+}
+
+test_overlong_turn_exempts_pipeline_owned_wait() {
+  local dir state fakebin out capture_file window key pid since
+  dir=$(make_case overlong-run-step-exempt); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"; window="test:fm-validating-long"
+  printf 'no-mistakes axi run: validating...' > "$capture_file"
+  printf 'window=%s\nkind=ship\nharness=pi\n' "$window" > "$state/validating-long.meta"
+  record_pi_busy "$state" validating-long
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  # Completed turn long ago: past the overlong-turn bound.
+  touch -t 200001010000 "$state/validating-long.turn-ended"
+  prime_turnend_seen "$state/validating-long.turn-ended"
+  # The task's authoritative current state is an actively-running no-mistakes
+  # step: the pipeline owns the wait, so the busy pane is legitimate.
+  export FM_FAKE_CREW_STATE='state: working · source: run-step · validating (running)'
+
+  # Phase A: even with a backdated wedge timer (an escalation round), the
+  # reverify defers the wake and restarts the timer instead of escalating.
+  echo $(( $(date +%s) - 500 )) > "$state/.stale-since-$key"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_BUSY_TURN_MAX_SECS=1 FM_STALE_ESCALATE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  if ! wait_live "$pid" 30; then
+    reap "$pid"; fail "a pipeline-owned wait behind a busy pane was escalated: $(cat "$out")"
+  fi
+  [ ! -s "$out" ] || fail "a pipeline-owned wait printed a wake reason"
+  [ ! -s "$state/.wake-queue" ] || fail "a pipeline-owned wait enqueued a wake"
+  since=$(cat "$state/.stale-since-$key" 2>/dev/null || true)
+  case "$since" in
+    ''|*[!0-9]*) reap "$pid"; fail "the pipeline-owned wait lost its escalation timer" ;;
+  esac
+  [ "$since" -gt $(( $(date +%s) - 300 )) ] \
+    || { reap "$pid"; fail "the pipeline-owned wait escalation round did not restart its timer"; }
+  reap "$pid"
+
+  # Phase B: the run ends (no run-step; pane still busy, still over age) - the
+  # next escalation round fires with the distinguishing overlong-turn reason.
+  unset FM_FAKE_CREW_STATE
+  echo $(( $(date +%s) - 500 )) > "$state/.stale-since-$key"
+  : > "$out"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_BUSY_TURN_MAX_SECS=1 FM_STALE_ESCALATE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 40 || fail "an over-age busy pane did not escalate after its run-step wait ended"
+  grep -F "stale: $window" "$out" >/dev/null || fail "post-run escalation did not print the stale wake"
+  grep -F "no completed turn" "$out" >/dev/null || fail "post-run escalation omitted its distinguishing overlong-turn reason"
+  grep -F "never started" "$out" >/dev/null && fail "a loaded-harness worker was mislabeled never started"
+  grep -F "possible wedge" "$out" >/dev/null || fail "post-run escalation did not flag a possible wedge"
+  pass "a pipeline-owned run-step wait exempts the overlong-turn bound, and the escalation resumes when the run ends"
+}
+
+test_busy_progress_alarms_exempt_declared_pause() {
+  local dir state fakebin out capture_file window key pid statusf sig
+  dir=$(make_case busy-paused-exempt); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"; window="test:fm-busy-paused"
+  printf 'Working...' > "$capture_file"
+  printf 'window=%s\nkind=ship\nharness=pi\n' "$window" > "$state/busy-paused.meta"
+  record_pi_busy "$state" busy-paused
+  statusf="$state/busy-paused.status"
+  printf 'paused: awaiting the upstream release\n' > "$statusf"
+  sig=$(seen_sig "$statusf"); printf '%s' "$sig" > "$state/.seen-busy-paused_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  # Completed turn long ago and a wedge mid-escalation: without the pause
+  # exemption this would fire.
+  touch -t 200001010000 "$state/busy-paused.turn-ended"
+  prime_turnend_seen "$state/busy-paused.turn-ended"
+  echo $(( $(date +%s) - 500 )) > "$state/.stale-since-$key"
+
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_BUSY_TURN_MAX_SECS=1 FM_STALE_ESCALATE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  if ! wait_live "$pid" 30; then
+    reap "$pid"; fail "a declared pause behind a busy pane was progress-escalated: $(cat "$out")"
+  fi
+  [ ! -s "$out" ] || fail "a declared pause behind a busy pane printed a wake reason"
+  [ ! -e "$state/.stale-since-$key" ] || fail "a declared pause kept the busy progress wedge timer"
+  reap "$pid"
+  pass "a declared pause exempts the busy progress alarms and clears their timer"
+}
+
+test_secondmate_busy_progress_never_fires() {
+  local dir state fakebin out capture_file window key pid
+  dir=$(make_case secondmate-busy-progress); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"; window="test:fm-secondmate-spawn"
+  printf 'First-run trust dialog, waiting...' > "$capture_file"
+  printf 'window=%s\nkind=secondmate\nharness=pi\n' "$window" > "$state/secondmate-spawn.meta"
+  record_spawn_busy "$state" secondmate-spawn
+  key=$(printf '%s' "$window" | tr '.:/' '___')
+  touch -t 200001010000 "$state/secondmate-spawn.meta"
+
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_NEVER_STARTED_SECS=1 FM_STALE_ESCALATE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  if ! wait_live "$pid" 30; then
+    reap "$pid"; fail "a secondmate pane tripped the busy progress alarms: $(cat "$out")"
+  fi
+  [ ! -s "$out" ] || { reap "$pid"; fail "a secondmate pane printed a wake reason: $(cat "$out")"; }
+  reap "$pid"
+  pass "secondmate panes remain exempt from the busy progress alarms"
+}
+
+test_busy_progress_missing_record_degrades_silently() {
+  local dir state fakebin out capture_file window key pid i
+  dir=$(make_case busy-progress-missing-record); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"; window="test:fm-no-record"
+  printf 'Working... (0.0s)' > "$capture_file"
+  printf 'window=%s\nkind=ship\nharness=pi\n' "$window" > "$state/no-record.meta"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  # No busy-state record at all (never armed) and an old meta: classification
+  # is unknown, so the progress alarms must not fire; the repainting pane hash
+  # keeps the plain stale path absorbed (the incident's masking shape).
+  touch -t 200001010000 "$state/no-record.meta"
+
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_NEVER_STARTED_SECS=1 FM_BUSY_TURN_MAX_SECS=1 FM_STALE_ESCALATE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  i=0
+  while [ "$i" -lt 10 ]; do
+    sleep 0.5
+    printf 'Working... (%s.0s)\n' "$i" > "$capture_file"
+    kill -0 "$pid" 2>/dev/null || { reap "$pid"; fail "a task with no busy-state record was escalated: $(cat "$out")"; }
+    i=$((i + 1))
+  done
+  [ ! -s "$out" ] || fail "a task with no busy-state record printed a wake reason: $(cat "$out")"
+  [ ! -e "$state/.stale-since-$key" ] || fail "a task with no busy-state record started a progress wedge timer"
+  reap "$pid"
+  pass "a missing busy-state record degrades to today's behavior (unknown is never a progress alarm)"
+}
+
 # Behavioral proof that the production default (no FM_BUSY_TURN_MAX_SECS override
-# anywhere in this env) is 3600s: a completed turn 5 minutes old must not start a
-# wedge timer, while one 66 minutes old must - bracketing the default around 3600
-# without waiting a literal hour.
-test_busy_pane_default_turn_age_bound_is_3600s() {
+# anywhere in this env) is 1200s: a completed turn 15 minutes old must not start
+# a wedge timer, while one 25 minutes old must - bracketing the default around
+# 1200 without waiting a literal 20 minutes.
+test_busy_pane_default_turn_age_bound_is_1200s() {
   local dir state fakebin out capture_file window key pane_hash sig pid
   dir=$(make_case busy-default-turn-age); state="$dir/state"; fakebin="$dir/fakebin"
   out="$dir/watch.out"; capture_file="$dir/pane.txt"; window="test:fm-busy-default"
@@ -1325,19 +1588,19 @@ test_busy_pane_default_turn_age_bound_is_3600s() {
   printf '%s' "$pane_hash" > "$state/.hash-$key"
   printf '1\n' > "$state/.count-$key"
 
-  set_mtime $(( $(date +%s) - 300 )) "$state/busy-default.turn-ended"
+  set_mtime $(( $(date +%s) - 900 )) "$state/busy-default.turn-ended"
   prime_turnend_seen "$state/busy-default.turn-ended"
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
     FM_STATE_OVERRIDE="$state" FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
   if ! wait_live "$pid" 30; then
-    reap "$pid"; fail "a 5-minute-old completed turn tripped the default busy-turn-age bound: $(cat "$out")"
+    reap "$pid"; fail "a 15-minute-old completed turn tripped the default busy-turn-age bound: $(cat "$out")"
   fi
-  [ ! -e "$state/.stale-since-$key" ] || fail "a 5-minute-old completed turn started a wedge timer under the default bound"
+  [ ! -e "$state/.stale-since-$key" ] || fail "a 15-minute-old completed turn started a wedge timer under the default bound"
   reap "$pid"
 
-  set_mtime $(( $(date +%s) - 4000 )) "$state/busy-default.turn-ended"
+  set_mtime $(( $(date +%s) - 1500 )) "$state/busy-default.turn-ended"
   prime_turnend_seen "$state/busy-default.turn-ended"
   : > "$out"
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
@@ -1345,11 +1608,11 @@ test_busy_pane_default_turn_age_bound_is_3600s() {
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
   if ! wait_live "$pid" 30; then
-    reap "$pid"; fail "a 66-minute-old completed turn escalated before the wedge threshold under the default bound: $(cat "$out")"
+    reap "$pid"; fail "a 25-minute-old completed turn escalated before the wedge threshold under the default bound: $(cat "$out")"
   fi
-  [ -s "$state/.stale-since-$key" ] || fail "a 66-minute-old completed turn did not start a wedge timer under the default bound (default is not 3600s)"
+  [ -s "$state/.stale-since-$key" ] || fail "a 25-minute-old completed turn did not start a wedge timer under the default bound (default is not 1200s)"
   reap "$pid"
-  pass "the production default busy-turn-age bound is 3600s (5min under does not wedge, 66min over does)"
+  pass "the production default busy-turn-age bound is 1200s (15min under does not wedge, 25min over does)"
 }
 
 test_nonterminal_stale_repairs_missing_or_corrupt_timer() {
@@ -1590,7 +1853,14 @@ test_busy_pane_stable_hash_escalates_past_turn_age_bound
 test_busy_pane_changing_hash_escalates_past_turn_age_bound
 test_busy_pane_turn_end_touch_resets_age
 test_busy_pane_repeated_escalation_reaches_demand_deep_inspection
-test_busy_pane_default_turn_age_bound_is_3600s
+test_never_started_below_threshold_absorbed
+test_never_started_fires_past_threshold
+test_never_started_ignored_after_first_turn_or_loaded_source
+test_overlong_turn_exempts_pipeline_owned_wait
+test_busy_progress_alarms_exempt_declared_pause
+test_secondmate_busy_progress_never_fires
+test_busy_progress_missing_record_degrades_silently
+test_busy_pane_default_turn_age_bound_is_1200s
 test_nonterminal_stale_not_working_surfaced
 test_nonterminal_stale_paused_absorbed_then_resurfaced
 test_exited_declared_pause_is_bounded_but_live_gate_surfaces
