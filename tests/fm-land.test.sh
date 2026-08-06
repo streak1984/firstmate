@@ -185,6 +185,29 @@ run_land() {
   return "$rc"
 }
 
+test_missing_project_refused() {
+  local case_dir rc
+  case_dir=$(make_case meta-no-project)
+  fm_write_meta "$case_dir/home/state/task-x1.meta" \
+    "window=fm-task-x1" \
+    "worktree=$case_dir/wt" \
+    "kind=ship" \
+    "pr=https://github.com/example/repo/pull/9"
+
+  set +e
+  run_land "$case_dir" task-x1 > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "meta-no-project: fm-land should stop with exit 1"
+  assert_grep 'land: failed at clone-refresh: task task-x1 meta carries no project=' "$case_dir/stderr" \
+    "meta-no-project: no failure line naming the missing project"
+  assert_no_grep 'land: complete' "$case_dir/stdout" \
+    "meta-no-project: a refused landing must not print the completion line"
+  [ ! -s "$case_dir/teardown.log" ] || fail "meta-no-project: cleanup ran without a project"
+  pass "fm-land stops with exit 1 at clone refresh when the meta carries no project="
+}
+
 test_happy_path() {
   local case_dir rc
   case_dir=$(make_case happy)
@@ -430,12 +453,16 @@ test_missing_meta_refused() {
   rc=$?
   set -e
 
-  expect_code 1 "$rc" "missing-meta: fm-land should refuse"
+  expect_code 1 "$rc" "missing-meta: fm-land should refuse with exit 1"
   assert_grep 'error: no meta for task task-x1' "$case_dir/stderr" \
     "missing-meta: refusal did not name the missing meta"
+  assert_grep 'land: refused: no meta for task task-x1' "$case_dir/stderr" \
+    "missing-meta: no terminal land: refused verdict line"
+  assert_no_grep 'land: complete' "$case_dir/stdout" \
+    "missing-meta: a refused landing must not print the completion line"
   [ ! -s "$case_dir/pr-merge.log" ] || fail "missing-meta: merge ran without meta"
   [ ! -s "$case_dir/teardown.log" ] || fail "missing-meta: cleanup ran without meta"
-  pass "fm-land refuses before any action when the task meta is missing"
+  pass "fm-land refuses with exit 1 before any action when the task meta is missing"
 }
 
 test_meta_without_pr_refused() {
@@ -452,14 +479,19 @@ test_meta_without_pr_refused() {
   rc=$?
   set -e
 
-  expect_code 1 "$rc" "meta-no-pr: fm-land should refuse"
+  expect_code 1 "$rc" "meta-no-pr: fm-land should refuse with exit 1"
   assert_grep 'carries no pr=' "$case_dir/stderr" \
     "meta-no-pr: refusal did not name the missing pr"
+  assert_grep 'land: refused: task task-x1 meta carries no pr=' "$case_dir/stderr" \
+    "meta-no-pr: no terminal land: refused verdict line"
+  assert_no_grep 'land: complete' "$case_dir/stdout" \
+    "meta-no-pr: a refused landing must not print the completion line"
   [ ! -s "$case_dir/pr-merge.log" ] || fail "meta-no-pr: merge ran without a recorded pr"
-  pass "fm-land refuses when the task meta carries no pr="
+  pass "fm-land refuses with exit 1 when the task meta carries no pr="
 }
 
 test_happy_path
+test_missing_project_refused
 test_merge_failure_stops_chain
 test_clone_refresh_failure_stops_chain
 test_teardown_refusal_is_terminal

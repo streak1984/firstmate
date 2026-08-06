@@ -66,6 +66,15 @@ RESUME=0
 PR_URL=
 LAND_STEP_OUT=
 
+# Terminal refusal: print a final "land: refused: <reason>" verdict line and
+# exit nonzero. Every precondition refusal funnels through here so a refused
+# landing can never exit 0 and never end without a visible land: verdict, even
+# when a caller pipes the output and loses the exit status.
+refuse() {
+  echo "land: refused: $*" >&2
+  exit 1
+}
+
 # Run one chain step: capture the child's combined output, replay it on success,
 # and stop the whole chain on failure with the evidence line.
 run_step() {
@@ -155,7 +164,7 @@ if [ -f "$META" ] && [ ! -L "$META" ]; then
   PR_URL=$(grep '^pr=' "$META" | tail -1 | cut -d= -f2- || true)
   if [ -z "$PR_URL" ]; then
     echo "error: task $ID meta exists but carries no pr=; record the PR first with bin/fm-pr-check.sh $ID <pr-url>" >&2
-    exit 1
+    refuse "task $ID meta carries no pr="
   fi
 elif task_is_done; then
   # No meta means teardown already completed (it removes the meta only after a
@@ -165,7 +174,7 @@ elif task_is_done; then
   PR_URL=$(recover_pr_url || true)
 else
   echo "error: no meta for task $ID at $META; the task is not recorded Done in the backlog" >&2
-  exit 1
+  refuse "no meta for task $ID"
 fi
 
 # --- the chain -------------------------------------------------------------
@@ -188,7 +197,7 @@ else
   fi
 
   if [ -z "$PROJ" ]; then
-    echo "land: failed at clone refresh: task $ID meta carries no project=" >&2
+    echo "land: failed at clone-refresh: task $ID meta carries no project=" >&2
     exit 1
   fi
   run_step clone-refresh . fm-fleet-sync.sh "$PROJ"
