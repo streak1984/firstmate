@@ -721,6 +721,24 @@ fm_backend_send_key() {  # <backend> <target> <key> [expected-label]
   esac
 }
 
+# fm_backend_target_blocked: 0 when <backend> can PROVE <target> is natively
+# parked on an interactive dialog (a permission prompt, a trust dialog, or an
+# AskUserQuestion menu) waiting on a human answer, right now, before
+# anything is sent; 1 otherwise, including for a backend with no native
+# blocked concept - this predicate only ever narrows a refusal, never widens
+# one. Capability-gated: only herdr implements it today
+# (fm_backend_herdr_target_blocked). Callers check this BEFORE
+# fm_backend_send_text_submit so a blocked pane never receives any text or
+# Enter at all (task fm-send-refuse-blocked-w2).
+fm_backend_target_blocked() {  # <backend> <target>
+  local backend=$1 target=$2
+  fm_backend_source "$backend" || return 1
+  case "$backend" in
+    herdr) fm_backend_herdr_target_blocked "$target" ;;
+    *) return 1 ;;
+  esac
+}
+
 # fm_backend_send_text_submit: type text once, then submit and verify,
 # retrying only the submission (never retyping). Echoes the backend's
 # proof-carrying verdict; callers require exact empty - or the herdr

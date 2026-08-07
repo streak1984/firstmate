@@ -2383,6 +2383,11 @@ fm_backend_herdr_submit_queue_evidence() {  # <target> -> queued|absent|unknown
 # fallback verdict (see below): the pane was semantically busy and shows
 # retained/queued evidence, so the text was accepted for processing at turn
 # end - callers treat it as delivered-with-a-note and must not re-send.
+# A pane already blocked (parked on an interactive dialog) before this is
+# even called is a caller precondition, not a verdict of this function: see
+# fm_backend_herdr_target_blocked, checked by fm-send.sh before it types
+# anything, so that a hard refusal never shifts this function's own call
+# sequence (and the fixtures that pin it) by even one probe.
 fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep> <settle>
   local target=$1 text=$2 retries=$3 sleep_s=$4 settle=$5 i=0 verdict baseline confirm_sleep
   fm_backend_herdr_parse_target "$target" || { printf 'unknown'; return 0; }
@@ -2478,6 +2483,27 @@ fm_backend_herdr_agent_status_raw() {  # <session> <pane_id>
   local session=$1 pane_id=$2 out
   out=$(fm_backend_herdr_cli "$session" agent get "$pane_id" 2>/dev/null) || { printf ''; return 0; }
   printf '%s' "$out" | jq -r '.result.agent.agent_status // empty' 2>/dev/null
+}
+
+# fm_backend_herdr_target_blocked: 0 (true) when <target>'s NATIVE agent
+# status (agent get) reads exactly "blocked" right now - deterministic proof
+# the pane is parked on an interactive dialog (a permission prompt, a trust
+# dialog, or an AskUserQuestion menu) waiting on a human answer. 1 (false)
+# for any other status, an unreadable target, or a malformed target: this
+# predicate only ever narrows a refusal, never widens one on an inconclusive
+# read.
+# Task fm-send-refuse-blocked-w2, F2 in data/fm-herdr-friction-s1/report.md:
+# a steer sent through fm_backend_herdr_send_text_submit while a pane is
+# already blocked types into whatever the dialog renders, and the submit
+# core's retry loop goes on to press Enter into it, answering the dialog
+# with its highlighted option instead of delivering the message. fm-send.sh
+# calls this BEFORE the submit core so a blocked pane never receives any
+# text or Enter at all - deliberately a separate predicate rather than
+# folded into fm_backend_herdr_send_text_submit itself, so that function's
+# own call sequence (and every fixture pinned to it) stays unchanged.
+fm_backend_herdr_target_blocked() {  # <target>
+  fm_backend_herdr_target_ready "$1" || return 1
+  [ "$(fm_backend_herdr_agent_status_raw "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE")" = blocked ]
 }
 
 # fm_backend_herdr_busy_state: semantic busy state from herdr's native

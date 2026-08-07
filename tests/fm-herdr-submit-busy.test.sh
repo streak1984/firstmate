@@ -269,12 +269,15 @@ test_fm_send_queued_verdict_exits_zero_with_note() {
   neutral="$dir/neutral-root"; mkdir -p "$neutral"
   fm_write_meta "$state/herdr-busy.meta" "window=default:w1:p2" "backend=herdr"
   touch "$state/.last-watcher-beat"
-  printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/2.out"
-  write_pi_busy_capture "$resp/4.out"
-  printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/5.out"
+  # 1: fm-send's own pre-submit blocked check (fm_backend_herdr_target_blocked)
+  # reads agent get once, before the submit core's OWN call sequence starts.
+  printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/1.out"
+  printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/3.out"
+  write_pi_busy_capture "$resp/5.out"
   printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/6.out"
   printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/7.out"
-  write_pi_queued_capture "$resp/8.out"
+  printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/8.out"
+  write_pi_queued_capture "$resp/9.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_ROOT_OVERRIDE="$neutral" FM_HOME="$neutral" FM_STATE_OVERRIDE="$state" \
     FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_SEND_RETRIES=1 FM_SEND_SLEEP=0 FM_SEND_SETTLE=0 \
@@ -292,14 +295,17 @@ test_fm_send_busy_absent_still_fails_loud() {
   neutral="$dir/neutral-root"; mkdir -p "$neutral"
   fm_write_meta "$state/herdr-busy.meta" "window=default:w1:p2" "backend=herdr"
   touch "$state/.last-watcher-beat"
-  printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/2.out"
-  write_pi_busy_capture "$resp/4.out"
-  printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/5.out"
+  # 1: fm-send's own pre-submit blocked check (fm_backend_herdr_target_blocked)
+  # reads agent get once, before the submit core's OWN call sequence starts.
+  printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/1.out"
+  printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/3.out"
+  write_pi_busy_capture "$resp/5.out"
   printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/6.out"
   printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/7.out"
-  write_pi_busy_capture "$resp/8.out"
+  printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/8.out"
   write_pi_busy_capture "$resp/9.out"
-  printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/10.out"
+  write_pi_busy_capture "$resp/10.out"
+  printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/11.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_ROOT_OVERRIDE="$neutral" FM_HOME="$neutral" FM_STATE_OVERRIDE="$state" \
     FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_SEND_RETRIES=1 FM_SEND_SLEEP=0 FM_SEND_SETTLE=0 \

@@ -20,10 +20,30 @@
 # that as a `queued` verdict, which fm-send treats as delivered with an
 # explicit `queued (busy pane)` note instead of exiting non-zero.
 #
+# A message send against a pane natively parked on an interactive dialog - a
+# permission prompt, a trust dialog, or an AskUserQuestion menu - is refused
+# outright: fm-send checks the target's native blocked state (a capable
+# backend's fm_backend_target_blocked) BEFORE calling the submit core at
+# all, so a blocked pane never receives any text or Enter, prints one typed
+# `error:` line naming the parked dialog, and exits non-zero. Enter must
+# never be pressed into a pane in this state: the dialog's highlighted row
+# can render as the same bare prompt glyph an empty composer uses, so a blind
+# Enter would answer the dialog with its default choice instead of
+# delivering the message - an ask-user authority decision (AGENTS.md section
+# 7), never one to make by keystroke timing. Backends with no native blocked
+# state are unaffected and keep their current behavior. Scoped to the
+# message-send path only; --key is a direct, explicit key press (used by
+# recovery playbooks) and is unaffected.
+#
 # --verify classifies what happened to the message after the send path
 # completes and prints exactly one final line on EVERY completed invocation,
-# including the send-failure and unconfirmed-submit paths:
-# `verify: <landed|queued|dropped|unknown> <one short detail>`.
+# including the send-failure, blocked-refusal, and unconfirmed-submit paths:
+# `verify: <landed|queued|dropped|blocked|unknown> <one short detail>`.
+#   blocked - the target was natively parked on an interactive dialog before
+#             anything was sent (see above); always exits non-zero, the same
+#             as a transport send failure, and is reported directly by the
+#             send path rather than by the post-send read-only classifier
+#             below (nothing was sent, so there is nothing fresh to read).
 #   landed  - the composer no longer holds the message and the pane capture
 #             echoes the message text (matched on a normalized form; see the
 #             matching method below); or the submit core positively confirmed
@@ -51,7 +71,10 @@
 # rescues the send (exit 0, with a stderr note), while dropped and unknown
 # keep the loud nonzero refusal - unknown cannot overrule an unconfirmed
 # submit. A transport-level send failure always exits nonzero with
-# `verify: unknown transport send failed before submission`.
+# `verify: unknown transport send failed before submission`. A blocked
+# refusal always exits nonzero with `verify: blocked <target> is parked on an
+# interactive dialog; refused before typing or pressing Enter` - blocked is
+# a positive, native confirmation, never overruled by any read.
 # Verification NEVER re-sends under any outcome; the caller decides the next
 # step.
 # Transcript matching method: both the message and the pane capture are
@@ -326,6 +349,21 @@ if [ "${1:-}" = "--key" ]; then
     printf 'verify: unknown --key path carries no message text to verify\n'
   fi
 else
+  # Refuse a blind steer into a pane natively parked on an interactive
+  # dialog, BEFORE typing anything or creating any durable record below.
+  # This is a safety refusal on CONTENT state (is a human being waited on
+  # right now?), not the backend-readiness preflight the note above
+  # excludes: fm_backend_target_blocked is capability-gated (only herdr can
+  # prove it; every other backend reports 1/not-blocked and keeps its
+  # current behavior) and never widens on an inconclusive read. See the
+  # header for the full contract (task fm-send-refuse-blocked-w2).
+  if fm_backend_target_blocked "$TARGET_BACKEND" "$T"; then
+    echo "error: text not sent to $T ($T is parked on an interactive dialog awaiting a human answer; refusing the blind steer instead of pressing Enter into it; no text or Enter sent)" >&2
+    if [ "$VERIFY" = 1 ]; then
+      printf 'verify: blocked %s is parked on an interactive dialog; refused before typing or pressing Enter\n' "$T"
+    fi
+    exit 1
+  fi
   MESSAGE=$*
   if [ "$MARK_FROM_FIRSTMATE" = 1 ]; then
     # Reuse an existing correlation id for recovery resends; otherwise create a
