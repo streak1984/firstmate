@@ -733,6 +733,60 @@ test_attached_arm_relays_actionable_close_when_no_owning_arm() {
   pass "attached arm relays an actionable close when no owning arm delivered it"
 }
 
+test_attached_arm_old_delivery_row_pid_collision_does_not_suppress_relay() {
+  # Pid-reuse collision regression: the lifecycle ledger still holds an old
+  # actionable row for this watcher's pid (a previous cycle that reused the
+  # same number). Without epoch binding, that old row would make the attached
+  # arm believe the close was delivered and exit clean and silent - skipping
+  # the relay - even though no owning arm delivered THIS cycle's wake. The
+  # delivery row must be bound to the arm's attach epoch: an old row (ended
+  # before this arm attached) never counts, so the arm relays the recorded
+  # reason and the wake still surfaces.
+  local dir state fakebin out armout drain_out i wpid armpid status old_epoch
+  dir=$(make_case arm-attached-pid-reuse-collision)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  armout="$dir/arm.out"
+  drain_out="$dir/drain.out"
+  mark_pr_check_migration_complete "$state"
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=0.2 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  wpid=$!
+  i=0
+  while [ "$i" -lt 60 ]; do
+    [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$wpid" ] && [ -e "$state/.last-watcher-beat" ] && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$wpid" ] || fail "seed watcher did not take the lock"
+  # A plausible old ledger row for the SAME pid, ended long before this arm
+  # will attach: the pid-reuse collision.
+  old_epoch=$(( $(date +%s) - 1000 ))
+  printf 'arm_pid=1\twatcher_pid=%s\torigin=started\tstarted_at=%s\tended_at=%s\texit_code=0\tsignal=none\treason=actionable-signal\tbeacon_age=1\tlock_before=pid:none|identity:none\tlock_after=pid:none|identity:none\tsuccessor=none\n' "$wpid" "$old_epoch" "$old_epoch" > "$state/.watch-cycle-exits.log"
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_ARM_ATTACH_POLL=0.1 FM_ARM_CONFIRM_TIMEOUT=1 "$WATCH_ARM" > "$armout" &
+  armpid=$!
+  i=0
+  while [ "$i" -lt 80 ]; do
+    grep -qF "watcher: attached pid=$wpid" "$armout" 2>/dev/null && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  grep -qF "watcher: attached pid=$wpid" "$armout" || fail "arm did not attach to the live watcher"
+  printf 'done: synthetic pid-reuse wake\n' > "$state/task.status"
+  wait_for_exit "$wpid" 120 || fail "watcher did not close with its actionable wake"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" || fail "drain after pid-reuse close failed"
+  grep -F 'task.status' "$drain_out" >/dev/null || fail "the pid-reuse wake was not preserved in the durable queue"
+  wait_for_exit "$armpid" 120
+  status=$?
+  [ "$status" -eq 0 ] || fail "attached arm exited $status instead of relaying the pid-reuse close: $(cat "$armout")"
+  ! grep -qF 'watcher: FAILED' "$armout" || fail "attached arm reported FAILED for an explained pid-reuse close: $(cat "$armout")"
+  grep -E '^signal:' "$armout" >/dev/null \
+    || fail "attached arm treated the old same-pid delivery row as delivered and skipped the relay: $(cat "$armout")"
+  grep -q "arm_pid=$armpid.*watcher_pid=$wpid.*origin=attached.*reason=attached-actionable-relay" "$state/.watch-cycle-exits.log" \
+    || fail "pid-reuse relayed close was not classified in the lifecycle ledger"
+  pass "old same-pid delivery rows never suppress the attached arm relay"
+}
+
 test_attached_arm_stale_close_record_does_not_absolve_reasonless_close() {
   # Away-mode handover residue: the daemon's watcher children also write close
   # records. A stale record - an old epoch, or a different watcher pid - must
@@ -1203,6 +1257,7 @@ test_watcher_self_evicts_on_lock_takeover
 test_arm_self_eviction_is_loud_without_successor
 test_arm_attaches_and_waits_for_live_fresh_watcher
 test_attached_arm_actionable_close_with_owning_arm_is_clean
+test_attached_arm_old_delivery_row_pid_collision_does_not_suppress_relay
 test_attached_arm_relays_actionable_close_when_no_owning_arm
 test_attached_arm_stale_close_record_does_not_absolve_reasonless_close
 test_attached_arm_signal_is_recorded_in_cycle_ledger

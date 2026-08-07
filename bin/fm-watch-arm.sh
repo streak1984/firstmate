@@ -294,16 +294,32 @@ watch_close_kind() {  # <watcher-pid> -> echoes the wake kind on an explained ac
   return 0
 }
 
-# 0 iff the owning arm already recorded delivery of this watcher's actionable
-# close in the lifecycle ledger (its cycle row carries reason=actionable-*).
+# 0 iff the owning arm already recorded delivery of THIS cycle's actionable
+# close in the lifecycle ledger: a row for the closed watcher's pid, carrying
+# reason=actionable-*, whose ended_at is at or after this arm's attach epoch.
 # The parent arm writes that row the moment its child closes, well before this
 # attached arm finishes its bounded successor wait, so a match proves the wake
-# was delivered; a miss means the attached arm must relay the recorded reason
-# itself so the wake still surfaces.
+# was delivered. The attach-epoch bound keeps an OLD row for a reused pid from
+# counting as delivery: a row that ended before this arm attached cannot be
+# this cycle's close, so the attached arm must relay the recorded reason
+# itself rather than exit silent. A miss means the same relay obligation.
 attached_close_was_delivered() {  # <watcher-pid>
   local pid=$1
   [ -f "$CYCLE_LOG" ] || return 1
-  grep -q "watcher_pid=$pid.*reason=actionable-" "$CYCLE_LOG" 2>/dev/null
+  awk -F '\t' -v want="$pid" -v since="$cycle_started_at" '
+    {
+      wpid = ""
+      ended = ""
+      reason = ""
+      for (i = 1; i <= NF; i += 1) {
+        if ($i ~ /^watcher_pid=/) wpid = substr($i, 13)
+        else if ($i ~ /^ended_at=/) ended = substr($i, 10)
+        else if ($i ~ /^reason=/) reason = substr($i, 8)
+      }
+      if (wpid == want && ended ~ /^[0-9]+$/ && ended >= since && reason ~ /^actionable-/) found = 1
+    }
+    END { exit(found ? 0 : 1) }
+  ' "$CYCLE_LOG" 2>/dev/null
 }
 
 fail_unexplained_cycle() {
