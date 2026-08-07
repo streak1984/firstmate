@@ -261,6 +261,29 @@ EOF
   pass "fm-spawn: a harness with no verified busy source reports unknown at the timeout"
 }
 
+test_unconfirmable_harness_window_is_capped() {
+  # Codex outside herdr can never classify processing (no armed busy record,
+  # no native busy verdict), so the phase must not stall for the full
+  # FM_SPAWN_CONFIRM_TIMEOUT budget on every such spawn: the poll window is
+  # capped at FM_SPAWN_CONFIRM_UNCONFIRMABLE_TIMEOUT while dialog and
+  # dead-endpoint detection keep running inside the capped window.
+  local id="confirm-capped-$$" rec home project worktree fakebin out rc=0
+  rec=$(make_case capped codex "$id")
+  IFS='|' read -r home project worktree fakebin <<EOF
+$rec
+EOF
+  out=$(run_spawn "$home" "$project" "$worktree" "$fakebin" "$id" codex \
+    FM_SPAWN_CONFIRM_TIMEOUT=45 FM_SPAWN_CONFIRM_POLL_INTERVAL=0.5 \
+    FM_SPAWN_CONFIRM_UNCONFIRMABLE_TIMEOUT=1) || rc=$?
+  expect_code 0 "$rc" "a capped unknown outcome must not fail the spawn"
+  assert_contains "$out" "confirm: unknown codex-unverified" \
+    "the capped window did not report the honest unknown"
+  confirm_line_is_final "$out"
+  [ "$(capture_count "$TMP_ROOT/$id.captures")" = 2 ] || \
+    fail "the unconfirmable window was not capped (expected 2 captures, got $(capture_count "$TMP_ROOT/$id.captures"))"
+  pass "fm-spawn: an unconfirmable harness/backend pair gets a capped confirm window"
+}
+
 # A bordered composer box with real text and the cursor on its content row:
 # the shared tmux composer reader classifies it pending. Every row's inner
 # width is identical (23), so the geometry is proven, not ambiguous.
@@ -353,6 +376,7 @@ test_seed_busy_record_alone_is_not_processing
 test_parked_prompt_is_reported_as_dialog_without_keystrokes
 test_dead_endpoint_yields_failed
 test_unverified_harness_is_unknown_at_timeout
+test_unconfirmable_harness_window_is_capped
 test_template_launch_with_unsubmitted_text_yields_failed
 test_raw_launch_composer_lookalike_is_not_failed
 test_secondmate_spawn_prints_no_confirm_line

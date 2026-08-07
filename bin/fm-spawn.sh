@@ -148,7 +148,13 @@
 # The phase polls for FM_SPAWN_CONFIRM_TIMEOUT seconds (default 45) at a short
 # fixed interval (FM_SPAWN_CONFIRM_POLL_INTERVAL, default 0.5) and returns as
 # soon as a positive classification lands, so a fast worker adds near-zero wall
-# time. On dialog or failed it also appends a blocked: line to
+# time. A harness/backend pair with no live-verifiable busy source (codex
+# outside the herdr backend: codex arms no busy record and only herdr has a
+# native busy verdict) can never classify processing, so its poll window is
+# capped at FM_SPAWN_CONFIRM_UNCONFIRMABLE_TIMEOUT seconds (default 5, never
+# above the main timeout) - long enough for dialog and dead-endpoint
+# detection, without stalling every such spawn for the full budget. On dialog
+# or failed it also appends a blocked: line to
 # state/<id>.status so the watcher escalates. Exit is nonzero only on failed;
 # processing, dialog, and unknown exit 0 because the worker is launched either
 # way. The phase never relaunches, never re-sends the brief, and never sends a
@@ -1543,6 +1549,19 @@ spawn_confirm_launch() {  # -> "<state> <detail>" on stdout; 1 only on failed
   esac
   timeout=${FM_SPAWN_CONFIRM_TIMEOUT:-45}
   interval=${FM_SPAWN_CONFIRM_POLL_INTERVAL:-0.5}
+  case "$HARNESS" in
+    codex*)
+      # Codex arms no busy record and only herdr supplies a native busy
+      # verdict, so a codex launch outside herdr can never classify
+      # processing. Cap the window so dialog and dead-endpoint detection
+      # still run without stalling every such spawn for the full budget; the
+      # final composer check below still runs after the capped window.
+      if [ "$BACKEND" != herdr ]; then
+        timeout=$(awk -v t="$timeout" -v c="${FM_SPAWN_CONFIRM_UNCONFIRMABLE_TIMEOUT:-5}" \
+          'BEGIN { if (c >= 0 && c < t) t = c; print t }')
+      fi
+      ;;
+  esac
   max=$(awk -v t="$timeout" -v i="$interval" 'BEGIN { if (i <= 0) i = 0.5; n = int(t / i); if (n < 1) n = 1; print n }')
   while [ "$i" -lt "$max" ]; do
     verdict=$(fm_busy_classify_live "$BACKEND" "$T" "$HARNESS" "$ID" "$STATE")
