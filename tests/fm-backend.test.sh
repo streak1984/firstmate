@@ -141,7 +141,7 @@ resolve_permissive_tmux_kill_ref() {
 # hence the dispatcher is a copied sibling, while the tmux adapter is extracted
 # from BASE_REF so conformance tests retain the exact historical behavior even
 # when this branch changes tmux dispatch semantics.
-OLD_BIN_UNCHANGED_SIBLINGS="fm-gate-refuse-lib.sh fm-guard.sh fm-lock-lib.sh fm-tasks-axi-lib.sh fm-pr-lib.sh fm-tangle-lib.sh fm-tmux-lib.sh fm-composer-lib.sh fm-wake-lib.sh fm-classify-lib.sh fm-supervision-lib.sh fm-ff-lib.sh fm-config-inherit-lib.sh fm-project-mode.sh fm-harness.sh fm-crew-state.sh fm-decision-hold.sh fm-backend.sh fm-operational-input.sh fm-public-followup-lib.sh fm-x-lib.sh"
+OLD_BIN_UNCHANGED_SIBLINGS="fm-gate-refuse-lib.sh fm-guard.sh fm-lock-lib.sh fm-tasks-axi-lib.sh fm-pr-lib.sh fm-tangle-lib.sh fm-tmux-lib.sh fm-composer-lib.sh fm-wake-lib.sh fm-classify-lib.sh fm-supervision-lib.sh fm-ff-lib.sh fm-config-inherit-lib.sh fm-project-mode.sh fm-harness.sh fm-crew-state.sh fm-decision-hold.sh fm-backend.sh fm-operational-input.sh fm-public-followup-lib.sh fm-x-lib.sh fm-send-verify-lib.sh fm-busy-lib.sh fm-check-lib.sh fm-effort-lib.sh fm-push-transition-lib.sh"
 # A pull-request merge may add a new main-only dependency that the branch's older baseline does not have yet.
 OLD_BIN_OPTIONAL_SIBLINGS="fm-pending-reply-lib.sh"
 OLD_BIN_REFACTORED="fm-send.sh fm-peek.sh fm-watch.sh fm-spawn.sh fm-teardown.sh fm-marker-lib.sh"
@@ -165,6 +165,34 @@ build_old_bin() {  # <name> -> echoes root dir (root/bin/<script> is the entry p
     chmod +x "$bin/$f"
   done
   printf '%s\n' "$root"
+}
+
+# Guards against the OLD_BIN_UNCHANGED_SIBLINGS class of omission directly: a
+# REFACTORED entrypoint sources a sibling that build_old_bin never copies, so
+# the synthetic old bin/ aborts at source time on a missing file (exit 1) and
+# an old-vs-new comparison reports a spurious behavior difference instead of
+# the real one, or masks the real one entirely. Deriving the check from each
+# entrypoint's actual `. "$SCRIPT_DIR/..."` lines - the same convention their
+# own shellcheck source= comments already encode - means a future PR that
+# adds a new sourced sibling fails this test immediately instead of leaving a
+# silent gap for the next person to rediscover by hand.
+test_old_bin_siblings_complete() {
+  local known=" $OLD_BIN_UNCHANGED_SIBLINGS $OLD_BIN_OPTIONAL_SIBLINGS $OLD_BIN_REFACTORED fm-backend.sh "
+  local entry dep missing=""
+  for entry in $OLD_BIN_REFACTORED; do
+    # shellcheck disable=SC2016  # literal $SCRIPT_DIR text, matched against source, not expanded
+    while IFS= read -r dep; do
+      [ -n "$dep" ] || continue
+      case "$known" in
+        *" $dep "*) : ;;
+        *) missing="$missing $entry->$dep" ;;
+      esac
+    done < <(grep -oE '\. "\$SCRIPT_DIR/[a-zA-Z0-9_.-]+\.sh"' "$ROOT/bin/$entry" \
+      | sed -E 's#.*/([a-zA-Z0-9_.-]+\.sh)"#\1#')
+  done
+  [ -z "$missing" ] \
+    || fail "build_old_bin: sourced sibling(s) missing from OLD_BIN_UNCHANGED_SIBLINGS/OLD_BIN_OPTIONAL_SIBLINGS:$missing"
+  pass "build_old_bin: every OLD_BIN_REFACTORED entrypoint's sourced siblings are present in the fixture's copy list"
 }
 
 # --- fm-backend.sh unit tests ------------------------------------------------
@@ -1134,6 +1162,7 @@ test_spawn_autodetect_nesting_resolves_tmux_silently() {
   pass "fm-spawn.sh: auto-detect resolves nested tmux-in-herdr to tmux and stays silent end to end"
 }
 
+test_old_bin_siblings_complete
 test_backend_name_precedence
 test_backend_detect_precedence
 test_backend_detect_cmux_fallback_bundle_id
