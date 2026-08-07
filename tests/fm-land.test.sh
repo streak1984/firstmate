@@ -6,7 +6,9 @@
 #
 # Matrix:
 #   (a) happy path runs every step in order and completes with the pr url
-#   (b) merge failure stops the chain before any later step
+#   (b) merge failure stops the chain before any later step; with the real
+#       fm-pr-merge output shape (arm line on stdout, refusal on stderr) the
+#       evidence line is the actual stderr refusal, never the arm line
 #   (c) clone refresh failure stops the chain before cleanup
 #   (d) teardown refusal is terminal and keeps the refusal text verbatim
 #   (e) backlog completion failure stops the chain after cleanup
@@ -58,6 +60,15 @@ set -u
 printf '%s\n' "$*" >> "${FM_TEST_PR_MERGE_LOG:?}"
 if [ "${FM_TEST_PR_MERGE_FAIL:-0}" = 1 ]; then
   echo "merge refused: checks not green" >&2
+  exit 1
+fi
+if [ "${FM_TEST_PR_MERGE_FAIL_REAL:-0}" = 1 ]; then
+  # The real fm-pr-merge shape (live PR 51): the fm-pr-check arm confirmation
+  # reaches stdout BEFORE gh-axi's refusal reaches stderr, and the refusal
+  # carries no error:/REFUSED: prefix, with a hint line after it.
+  echo "pr-check: recorded pr=https://github.com/example/repo/pull/9 and armed the merge poll"
+  echo "X Pull request #9 is not mergeable: the merge commit cannot be cleanly created." >&2
+  echo "Resolve the conflicts on the head branch and retry." >&2
   exit 1
 fi
 exit 0
@@ -255,6 +266,30 @@ test_merge_failure_stops_chain() {
   assert_present "$case_dir/home/state/task-x1.meta" \
     "merge-fail: the meta should survive a merge failure"
   pass "fm-land stops at a merge failure with evidence before any later step"
+}
+
+test_merge_failure_evidence_is_the_real_refusal() {
+  # Live PR 51 regression: the real fm-pr-merge prints its pr-check arm line
+  # on stdout before the refusal reaches stderr, and the old combined head -1
+  # evidence rule surfaced the arm line instead of the refusal.
+  local case_dir rc
+  case_dir=$(make_case merge-fail-real)
+  set +e
+  FM_TEST_PR_MERGE_FAIL_REAL=1 \
+    run_land "$case_dir" task-x1 > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "merge-fail-real: fm-land should stop with nonzero exit"
+  assert_grep 'land: failed at merge: X Pull request #9 is not mergeable: the merge commit cannot be cleanly created.' \
+    "$case_dir/stderr" \
+    "merge-fail-real: the evidence line is not the child's actual refusal"
+  assert_grep 'pr-check: recorded pr=' "$case_dir/stderr" \
+    "merge-fail-real: the child's full output was not replayed for context"
+  assert_no_grep 'land: failed at merge: pr-check: recorded' "$case_dir/stderr" \
+    "merge-fail-real: the arm line must never be the evidence"
+  [ ! -s "$case_dir/fleet-sync.log" ] || fail "merge-fail-real: clone refresh ran after merge failure"
+  pass "fm-land surfaces the merge child's real stderr refusal as the failure evidence"
 }
 
 test_clone_refresh_failure_stops_chain() {
@@ -493,6 +528,7 @@ test_meta_without_pr_refused() {
 test_happy_path
 test_missing_project_refused
 test_merge_failure_stops_chain
+test_merge_failure_evidence_is_the_real_refusal
 test_clone_refresh_failure_stops_chain
 test_teardown_refusal_is_terminal
 test_backlog_failure_stops_chain

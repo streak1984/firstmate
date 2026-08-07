@@ -65,6 +65,7 @@ META="$STATE/$ID.meta"
 RESUME=0
 PR_URL=
 LAND_STEP_OUT=
+LAND_STEP_ERR=
 
 # Terminal refusal: print a final "land: refused: <reason>" verdict line and
 # exit nonzero. Every precondition refusal funnels through here so a refused
@@ -75,19 +76,39 @@ refuse() {
   exit 1
 }
 
-# Run one chain step: capture the child's combined output, replay it on success,
-# and stop the whole chain on failure with the evidence line.
+# Run one chain step: capture the child's stdout and stderr separately, replay
+# both on success, and stop the whole chain on failure with the child's ACTUAL
+# error as the evidence line. Evidence comes from the child's stderr, never
+# from a combined stream: fm-pr-merge prints its fm-pr-check arm confirmation
+# on stdout before gh-axi's refusal reaches stderr, and the old combined
+# head -1 rule surfaced that arm line as the "evidence" for a real merge
+# refusal (live PR 51, "not mergeable: the merge commit cannot be cleanly
+# created"). The evidence line is the first stderr line carrying one of the
+# fleet's terminal-verdict prefixes (REFUSED:/error:/fatal:), else the first
+# non-empty stderr line, else the last non-empty stdout line, else the exit
+# status - so a teardown refusal keeps its REFUSED: line even when hint lines
+# follow it.
 run_step() {
-  local step=$1 run_cwd=$2 rc=0 evidence
+  local step=$1 run_cwd=$2 rc=0 evidence err_file
   shift 2
-  if LAND_STEP_OUT=$(cd "$run_cwd" && "$@" 2>&1); then
+  LAND_STEP_ERR=
+  err_file=$(mktemp "${TMPDIR:-/tmp}/fm-land-step-err.XXXXXX") || {
+    echo "land: failed at $step: cannot create a temp file for the step stderr capture" >&2
+    exit 1
+  }
+  if LAND_STEP_OUT=$(cd "$run_cwd" && "$@" 2>"$err_file"); then
     :
   else
     rc=$?
   fi
+  LAND_STEP_ERR=$(cat "$err_file" 2>/dev/null || true)
+  rm -f "$err_file"
   if [ "$rc" -ne 0 ]; then
     [ -z "$LAND_STEP_OUT" ] || printf '%s\n' "$LAND_STEP_OUT" >&2
-    evidence=$(printf '%s\n' "$LAND_STEP_OUT" | sed '/^$/d' | head -1)
+    [ -z "$LAND_STEP_ERR" ] || printf '%s\n' "$LAND_STEP_ERR" >&2
+    evidence=$(printf '%s\n' "$LAND_STEP_ERR" | grep -E '^(REFUSED|error|fatal):' | head -1)
+    [ -n "$evidence" ] || evidence=$(printf '%s\n' "$LAND_STEP_ERR" | sed '/^$/d' | head -1)
+    [ -n "$evidence" ] || evidence=$(printf '%s\n' "$LAND_STEP_OUT" | sed '/^$/d' | tail -1)
     [ -n "$evidence" ] || evidence="exit $rc"
     echo "land: failed at $step: $evidence" >&2
     exit 1
@@ -96,6 +117,7 @@ run_step() {
 
 replay_step_out() {
   [ -z "$LAND_STEP_OUT" ] || printf '%s\n' "$LAND_STEP_OUT"
+  [ -z "$LAND_STEP_ERR" ] || printf '%s\n' "$LAND_STEP_ERR" >&2
 }
 
 # Is the recorded PR already merged? A read-only probe that resolves the stored
