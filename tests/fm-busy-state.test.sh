@@ -6,8 +6,9 @@
 # explicit source attribution; missing, malformed, stale (gen-mismatch), and
 # untrusted (source-mismatch) semantic data classify unknown - never idle;
 # adapter isolation (one adapter's writer or Grok's regex can never classify
-# another adapter); endpoint death is the only process-level override and
-# yields dead, never busy; converted adapters never classify from rendered
+# another adapter); endpoint death and, on a capability-gated backend, a
+# confirmed agent-less endpoint are the only process-level overrides and
+# yield dead, never busy; converted adapters never classify from rendered
 # footer text. All hermetic over temp dirs; no real agent session is invoked.
 set -u
 
@@ -289,7 +290,103 @@ test_dead_endpoint_overrides() {
   out=$(fm_busy_classify_live tmux '' claude t1 "$state")
   [ "$out" = "unknown no-target" ] || fail "empty target must classify unknown, got '$out'"
   unset -f fm_backend_target_exists
-  pass "endpoint death is the only process-level override and yields dead, never busy"
+  pass "endpoint death is a process-level override and yields dead, never busy"
+}
+
+# --- agent liveness (fm_busy_agent_proof_capable, F4/W4) ------------------------
+
+test_agent_dead_overrides_stale_busy_record() {
+  local state gen out
+  state=$(new_state_dir agent-dead)
+  gen=$("$EV" arm "$state" t1)
+  "$EV" apply "$state" t1 busy --gen "$gen" --source claude-hook --event user-prompt-submit
+  # shellcheck disable=SC2329 # invoked indirectly through fm_busy_classify_live
+  fm_backend_target_exists() { return 0; }
+  # shellcheck disable=SC2329 # invoked indirectly through fm_busy_classify_live
+  fm_backend_agent_alive() { printf 'dead'; }
+  out=$(fm_busy_classify_live herdr s:p claude t1 "$state")
+  [ "$out" = "dead agent-gone" ] \
+    || fail "a confirmed agent-less herdr endpoint must classify dead ahead of a stale busy record, got '$out'"
+  unset -f fm_backend_target_exists fm_backend_agent_alive
+  pass "a confirmed dead agent on a capable backend outranks a stale busy record"
+}
+
+test_agent_alive_keeps_busy_record() {
+  local state gen out
+  state=$(new_state_dir agent-alive)
+  gen=$("$EV" arm "$state" t1)
+  "$EV" apply "$state" t1 busy --gen "$gen" --source claude-hook --event user-prompt-submit
+  # shellcheck disable=SC2329 # invoked indirectly through fm_busy_classify_live
+  fm_backend_target_exists() { return 0; }
+  # shellcheck disable=SC2329 # invoked indirectly through fm_busy_classify_live
+  fm_backend_agent_alive() { printf 'alive'; }
+  out=$(fm_busy_classify_live herdr s:p claude t1 "$state")
+  [ "$out" = "busy claude-hook" ] \
+    || fail "a confirmed live agent must leave a healthy worker's busy classification unchanged, got '$out'"
+  unset -f fm_backend_target_exists fm_backend_agent_alive
+  pass "a confirmed live agent does not disturb a healthy worker's busy classification"
+}
+
+test_agent_ambiguous_registry_answer_not_dead() {
+  local state gen out answer
+  state=$(new_state_dir agent-ambiguous)
+  gen=$("$EV" arm "$state" t1)
+  "$EV" apply "$state" t1 busy --gen "$gen" --source claude-hook --event user-prompt-submit
+  # shellcheck disable=SC2329 # invoked indirectly through fm_busy_classify_live
+  fm_backend_target_exists() { return 0; }
+  for answer in unknown ''; do
+    FAKE_AGENT_ALIVE=$answer
+    # shellcheck disable=SC2329 # invoked indirectly through fm_busy_classify_live
+    fm_backend_agent_alive() { printf '%s' "$FAKE_AGENT_ALIVE"; }
+    out=$(fm_busy_classify_live herdr s:p claude t1 "$state")
+    [ "$out" = "busy claude-hook" ] \
+      || fail "an unreadable/ambiguous registry answer '$answer' must not classify dead, got '$out'"
+  done
+  unset -f fm_backend_target_exists fm_backend_agent_alive
+  pass "an unreadable or ambiguous agent registry answer is never treated as proof of death"
+}
+
+test_agent_liveness_capability_gated_to_herdr() {
+  local state gen out
+  state=$(new_state_dir agent-capability-gate)
+  gen=$("$EV" arm "$state" t1)
+  "$EV" apply "$state" t1 busy --gen "$gen" --source claude-hook --event user-prompt-submit
+  # shellcheck disable=SC2329 # invoked indirectly through fm_busy_classify_live
+  fm_backend_target_exists() { return 0; }
+  # shellcheck disable=SC2329 # invoked indirectly through fm_busy_classify_live
+  fm_backend_agent_alive() { printf 'dead'; }
+  out=$(fm_busy_classify_live tmux w1 claude t1 "$state")
+  [ "$out" = "busy claude-hook" ] \
+    || fail "a backend with no liveness capability must behave exactly as before, got '$out'"
+  unset -f fm_backend_target_exists fm_backend_agent_alive
+  pass "agent liveness override is capability-gated: tmux ignores a dead agent_alive answer"
+}
+
+# fm_busy_classify_meta (and therefore window_busy_class, the watcher's
+# mainline busy_progress_escalation path from the report's F4 reproduction)
+# calls fm_busy_classify directly and never fm_busy_classify_live, so the
+# override must live in fm_busy_classify itself, not only behind the
+# endpoint-exists wrapper.
+test_agent_dead_overrides_via_classify_meta() {
+  local state gen out meta
+  state=$(new_state_dir agent-dead-meta)
+  gen=$("$EV" arm "$state" t1)
+  "$EV" apply "$state" t1 busy --gen "$gen" --source claude-hook --event user-prompt-submit
+  meta="$state/t1.meta"
+  printf 'backend=herdr\ntarget=s:p\nharness=claude\n' > "$meta"
+  # shellcheck disable=SC2329 # invoked indirectly through fm_busy_classify_meta
+  fm_backend_of_meta() { grep '^backend=' "$1" | cut -d= -f2-; }
+  # shellcheck disable=SC2329 # invoked indirectly through fm_busy_classify_meta
+  fm_backend_target_of_meta() { grep '^target=' "$1" | cut -d= -f2-; }
+  # shellcheck disable=SC2329 # invoked indirectly through fm_busy_classify_meta
+  fm_meta_get() { grep "^$2=" "$1" | cut -d= -f2-; }
+  # shellcheck disable=SC2329 # invoked indirectly through fm_busy_classify
+  fm_backend_agent_alive() { printf 'dead'; }
+  out=$(fm_busy_classify_meta "$meta" t1 "$state")
+  [ "$out" = "dead agent-gone" ] \
+    || fail "the mainline meta-based classify path must also honor agent liveness, got '$out'"
+  unset -f fm_backend_of_meta fm_backend_target_of_meta fm_meta_get fm_backend_agent_alive
+  pass "fm_busy_classify_meta inherits the agent-liveness override without calling classify_live"
 }
 
 test_herdr_native_busy_only() {
@@ -373,6 +470,11 @@ test_grok_regex_isolated
 test_codex_unverified_gate
 test_kimi_unverified_gate
 test_dead_endpoint_overrides
+test_agent_dead_overrides_stale_busy_record
+test_agent_alive_keeps_busy_record
+test_agent_ambiguous_registry_answer_not_dead
+test_agent_liveness_capability_gated_to_herdr
+test_agent_dead_overrides_via_classify_meta
 test_herdr_native_busy_only
 test_record_read_leaves_caller_shell_intact
 test_boolean_view_never_promotes_unknown

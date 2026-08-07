@@ -5,11 +5,15 @@
 # (2026-07-28): each harness adapter reports turn lifecycle through a
 # machine-readable semantic source it owns, classification always exposes
 # which source produced it, and missing, malformed, stale, unsupported, or
-# unverified semantic data is UNKNOWN - never idle. Endpoint death is the only
-# process-level override and yields dead, never busy. Child processes, CPU,
-# process sleep state, marker mtimes, and the old global UI-regex OR are not
-# state signals here; state/<id>.turn-ended files remain wake NOTIFICATIONS
-# owned by the watcher, not current-state truth.
+# unverified semantic data is UNKNOWN - never idle. Endpoint death is a
+# process-level override and yields dead, never busy; so is a confirmed
+# agent-less endpoint on a backend that can prove agent registration
+# (fm_busy_agent_proof_capable), added 2026-08-07 to close the gap where an
+# unclean harness exit leaves a stale busy record with no Stop hook to
+# retire it. Child processes, CPU, process sleep state, marker mtimes, and
+# the old global UI-regex OR are not state signals here; state/<id>.turn-ended
+# files remain wake NOTIFICATIONS owned by the watcher, not current-state
+# truth.
 #
 # Record file: state/<id>.busy-state - exactly one line, atomically replaced
 # by bin/fm-busy-event.sh (the only writer):
@@ -39,20 +43,39 @@
 #   fm-interrupt     a firstmate-controlled interruption of the worker
 #   fm-recovery      a documented recovery reset after relaunch
 # Classifier-only sources (never written into a record):
-#   endpoint-gone, herdr-native, grok-regex, missing, malformed,
+#   endpoint-gone, agent-gone, herdr-native, grok-regex, missing, malformed,
 #   gen-mismatch, source-mismatch, kimi-unverified, codex-unverified,
 #   capture-failed, no-target
 #
 # Classification (fm_busy_classify): busy | idle | unknown | dead, always
 # with the producing source as the second token. Precedence:
-#   1. dead endpoint (fm_busy_classify_live only) -> dead endpoint-gone
-#   2. standalone Kimi before verification       -> unknown kimi-unverified
-#   3. a valid, gen-matching, source-trusted record -> its state and source
-#   4. no record at all: herdr's native busy verdict is trusted as busy
+#   1. dead endpoint (fm_busy_classify_live only)  -> dead endpoint-gone
+#   2. confirmed agent-less endpoint, capability-gated to a backend that can
+#      prove agent registration (fm_busy_classify itself, so every entry
+#      point - fm_busy_classify_live, fm_busy_classify_meta, and a direct
+#      call - inherits it) -> dead agent-gone
+#   3. standalone Kimi before verification       -> unknown kimi-unverified
+#   4. a valid, gen-matching, source-trusted record -> its state and source
+#   5. no record at all: herdr's native busy verdict is trusted as busy
 #      (generation state is sufficient for busy, not for idle), then the
 #      Grok-only temporary regex fallback classifies a grok task from its
 #      rendered tail, then unknown missing
-#   5. malformed, stale, or untrusted records -> unknown, never a fallback
+#   6. malformed, stale, or untrusted records -> unknown, never a fallback
+#
+# Step 2's capability gate (fm_busy_agent_proof_capable) is deliberately
+# narrower than "this backend defines fm_backend_agent_alive": tmux answers
+# that call too, but only via a foreground-process-name heuristic, not a
+# real agent registry, so tmux is excluded and keeps its pre-2026-08-07
+# behavior unchanged. Only a positive dead/missing verdict from a capable
+# backend promotes to dead; unreadable, ambiguous, or unverified answers
+# fall through to the record read exactly as before, so a transient registry
+# read error can never kill a healthy worker's classification. Step 2 also
+# runs ahead of step 3 (Kimi/Codex verification gates), since a confirmed-dead
+# agent is a stronger signal than an unverified semantic source.
+# fm_busy_classify assumes its caller already established the endpoint is
+# present (see its own docstring); every current caller captures or probes
+# the pane first, so step 2's registry read never fires against a target
+# that does not exist.
 # The Grok arm is the ONLY rendered-text classification that survives the
 # redesign, because Grok's structured lifecycle was not credited-live-verified
 # in the approved audit; it is scoped to harness=grok and can never classify
@@ -128,6 +151,17 @@ fm_busy_codex_hooks_verified() {
 # classifier reports unknown codex-unverified until it opens.
 fm_busy_codex_semantic_source() {
   fm_busy_codex_appserver_observable || fm_busy_codex_hooks_verified
+}
+
+# fm_busy_agent_proof_capable: 0 when <backend> can prove agent registration
+# off a real registry, so fm_busy_classify_live may promote "endpoint exists,
+# no agent registered" to dead ahead of the record read. See the header
+# comment for why tmux's own fm_backend_agent_alive answer does not qualify.
+fm_busy_agent_proof_capable() {  # <backend>
+  case "$1" in
+    herdr) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 fm_busy_record_path() {  # <state-dir> <id>
@@ -257,13 +291,23 @@ fm_busy_grok_tail_busy() {
 
 # fm_busy_classify: semantic classification for a task whose endpoint the
 # caller has already established as present. Prints "<verdict> <source>":
-# busy|idle|unknown plus the producing source (see header). Never probes
-# process state. <tail40> is optional pre-captured plain output used only by
-# the Grok arm; when absent the Grok arm captures through fm_backend_capture
-# if available, else reports unknown capture-failed.
+# busy|idle|unknown|dead plus the producing source (see header). Never probes
+# raw process state (CPU, child processes); the one exception is the
+# capability-gated agent-registry check below, a structural signal like the
+# native-busy read further down, not a process guess. <tail40> is optional
+# pre-captured plain output used only by the Grok arm; when absent the Grok
+# arm captures through fm_backend_capture if available, else reports unknown
+# capture-failed.
 fm_busy_classify() {  # <backend> <target> <harness> <id> <state-dir> [tail40]
   local backend=$1 target=$2 harness=$3 id=$4 state=$5 tail40=${6-}
-  local out rc r_state r_source native
+  local out rc r_state r_source native agent_state
+  if fm_busy_agent_proof_capable "$backend" && command -v fm_backend_agent_alive >/dev/null 2>&1; then
+    agent_state=$(fm_backend_agent_alive "$backend" "$target" 2>/dev/null) || agent_state=unknown
+    if [ "$agent_state" = dead ]; then
+      printf 'dead agent-gone'
+      return 0
+    fi
+  fi
   case "$harness" in
     kimi*)
       if ! fm_busy_kimi_verified; then
@@ -331,8 +375,11 @@ fm_busy_classify() {  # <backend> <target> <harness> <id> <state-dir> [tail40]
   printf 'unknown missing'
 }
 
-# fm_busy_classify_live: fm_busy_classify behind the one process-level
-# override - a gone endpoint is dead, never busy. Requires fm-backend.sh to
+# fm_busy_classify_live: fm_busy_classify behind the endpoint-death
+# process-level override in the header's precedence list - a gone endpoint
+# is dead, never busy. The capability-gated agent-less override lives inside
+# fm_busy_classify itself (so fm_busy_classify_meta and every other direct
+# caller inherits it too, not only this wrapper). Requires fm-backend.sh to
 # be sourced for fm_backend_target_exists.
 fm_busy_classify_live() {  # <backend> <target> <harness> <id> <state-dir> [expected-label]
   local backend=$1 target=$2 harness=$3 id=$4 state=$5 label=${6-}
