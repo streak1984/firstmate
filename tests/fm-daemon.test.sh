@@ -518,6 +518,16 @@ test_housekeeping_herdr_idle_busy_record_clears_stale() {
       [ "$2" = "default:w1:p4" ] || fail "expected herdr busy target, got $2"
       printf 'idle'
     }
+    # The crew is genuinely alive, just reading native idle (generation
+    # state) while blocked in a foreground tool call; stub the registry
+    # check fm_busy_classify now runs so this stays hermetic instead of
+    # reaching a real herdr server for a target that does not exist there.
+    # shellcheck disable=SC2329 # invoked indirectly through fm_busy_classify
+    fm_backend_agent_alive() {
+      [ "$1" = herdr ] || fail "expected herdr agent-alive backend, got $1"
+      [ "$2" = "default:w1:p4" ] || fail "expected herdr agent-alive target, got $2"
+      printf 'alive'
+    }
     fm_backend_capture herdr default:w1:p4 40 >/dev/null
     [ "$(fm_backend_busy_state herdr default:w1:p4)" = idle ] || fail "herdr busy stub did not report idle"
     FM_STATE_OVERRIDE="$state" FM_STALE_ESCALATE_SECS=240 housekeeping "$state"
@@ -545,6 +555,15 @@ test_housekeeping_herdr_resumed_stale_cleared() {
       [ "$1" = herdr ] || fail "expected herdr busy backend, got $1"
       [ "$2" = "default:w1:p3" ] || fail "expected herdr busy target, got $2"
       printf 'busy'
+    }
+    # Stub the registry check fm_busy_classify now runs so this stays
+    # hermetic instead of reaching a real herdr server for a target that
+    # does not exist there.
+    # shellcheck disable=SC2329 # invoked indirectly through fm_busy_classify
+    fm_backend_agent_alive() {
+      [ "$1" = herdr ] || fail "expected herdr agent-alive backend, got $1"
+      [ "$2" = "default:w1:p3" ] || fail "expected herdr agent-alive target, got $2"
+      printf 'alive'
     }
     fm_backend_capture herdr default:w1:p3 40 >/dev/null
     [ "$(fm_backend_busy_state herdr default:w1:p3)" = busy ] || fail "herdr busy stub did not report busy"
