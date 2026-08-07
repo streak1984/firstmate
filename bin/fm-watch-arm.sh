@@ -38,9 +38,15 @@
 # returns the FAILED line. On started it waits the child and propagates the wake
 # reason; on attached it stays live across identity-matched successors. An
 # attached cycle that ends without a healthy successor is a typed nonzero failure,
-# never a clean empty completion. On FAILED it exits non-zero so the failure is
-# loud. A live cycle already present means re-arm attaches - do not start a second
-# watcher.
+# never a clean empty completion - UNLESS the closed cycle's own durable close
+# record (state/.watch-last-close, written by the watcher before it prints any
+# actionable reason) proves that cycle ended WITH an actionable wake. That close
+# is explained, not reasonless: the owning arm delivers the printed reason and the
+# durable queue preserves the wake, so the attached arm exits clean and silent
+# when that delivery is recorded in the lifecycle ledger, and otherwise relays
+# the recorded reason itself so the wake still surfaces. On FAILED it exits
+# non-zero so the failure is loud. A live cycle already present means re-arm
+# attaches - do not start a second watcher.
 #
 # Every observed watcher cycle appends one tab-separated lifecycle record to
 # state/.watch-cycle-exits.log. The arm layer owns that bounded ledger; it records
@@ -81,6 +87,10 @@ CYCLE_LOG="$STATE/.watch-cycle-exits.log"
 CYCLE_LOG_LOCK="$STATE/.watch-cycle-exits.lock"
 CYCLE_LOG_MAX_BYTES=${FM_WATCH_CYCLE_LOG_MAX_BYTES:-262144}
 CYCLE_LOG_KEEP_LINES=${FM_WATCH_CYCLE_LOG_KEEP_LINES:-1000}
+# The watcher's own durable close record (bin/fm-watch.sh writes it before
+# printing any actionable reason). The attached arm reads it to tell an
+# explained actionable close from a genuinely reasonless death.
+CLOSE_RECORD="$STATE/.watch-last-close"
 ARM_PID=${BASHPID:-$$}
 case "$CYCLE_LOG_MAX_BYTES" in ''|*[!0-9]*|0) CYCLE_LOG_MAX_BYTES=262144 ;; esac
 case "$CYCLE_LOG_KEEP_LINES" in ''|*[!0-9]*|0) CYCLE_LOG_KEEP_LINES=1000 ;; esac
@@ -256,6 +266,46 @@ wait_for_healthy_successor() {
   done
 }
 
+# Classify the close of an attached watcher cycle from the watcher's own
+# durable close record. The attached arm is not the watcher's parent, so it
+# never sees the printed reason; the record is the only evidence of WHY the
+# cycle ended. An actionable record bound to this watcher's pid, written after
+# this arm attached, proves the cycle ended with a real wake - delivered by the
+# owning arm and preserved in the durable queue - not a reasonless death. Any
+# malformed, stale, pid-mismatched, or non-actionable record fails closed to
+# the loud unexplained-close failure.
+watch_close_kind() {  # <watcher-pid> -> echoes the wake kind on an explained actionable close
+  local pid=$1 record kind rec_pid epoch
+  [ -f "$CLOSE_RECORD" ] || return 1
+  record=$(cat "$CLOSE_RECORD" 2>/dev/null) || return 1
+  kind=$(printf '%s' "$record" | sed -n 's/^kind=\([a-z][a-z]*\) .*$/\1/p')
+  rec_pid=$(printf '%s' "$record" | sed -n 's/^kind=[a-z][a-z]* epoch=[0-9][0-9]* watcher_pid=\([0-9][0-9]*\) .*$/\1/p')
+  epoch=$(printf '%s' "$record" | sed -n 's/^kind=[a-z][a-z]* epoch=\([0-9][0-9]*\) .*$/\1/p')
+  case "$kind" in
+    signal|stale|check|heartbeat) ;;
+    *) return 1 ;;
+  esac
+  [ "$rec_pid" = "$pid" ] || return 1
+  case "$epoch" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  [ "$epoch" -ge "$cycle_started_at" ] || return 1
+  printf '%s\n' "$kind"
+  return 0
+}
+
+# 0 iff the owning arm already recorded delivery of this watcher's actionable
+# close in the lifecycle ledger (its cycle row carries reason=actionable-*).
+# The parent arm writes that row the moment its child closes, well before this
+# attached arm finishes its bounded successor wait, so a match proves the wake
+# was delivered; a miss means the attached arm must relay the recorded reason
+# itself so the wake still surfaces.
+attached_close_was_delivered() {  # <watcher-pid>
+  local pid=$1
+  [ -f "$CYCLE_LOG" ] || return 1
+  grep -q "watcher_pid=$pid.*reason=actionable-" "$CYCLE_LOG" 2>/dev/null
+}
+
 fail_unexplained_cycle() {
   echo "watcher: FAILED - cycle ended without an actionable reason"
   return 1
@@ -265,7 +315,7 @@ fail_unexplained_cycle() {
 # to a verified successor. With no successor, fail loudly instead of returning a
 # clean empty completion that an adapter could mistake for a no-op.
 attach_and_wait() {
-  local attached_pid=$1
+  local attached_pid=$1 close_kind
   while :; do
     if healthy_watcher; then
       if [ "$HEALTHY_PID" != "$attached_pid" ]; then
@@ -283,6 +333,26 @@ attach_and_wait() {
       cycle_begin "$attached_pid" attached
       report_attached
       continue
+    fi
+    # No successor. Before declaring an unexplained failure, ask the closed
+    # cycle's own durable close record whether it ended WITH an actionable
+    # wake: the attached arm never sees the printed reason, but an actionable
+    # record bound to this watcher proves the cycle did not die reasonlessly.
+    close_kind=$(watch_close_kind "$attached_pid") || close_kind=
+    if [ -n "$close_kind" ]; then
+      if attached_close_was_delivered "$attached_pid"; then
+        # The owning arm already delivered this wake and the durable queue
+        # preserves it: close clean and silent so the harness is not woken
+        # again by a false FAILED alarm.
+        cycle_log_append unknown unknown attached-actionable-close none
+        exit 0
+      fi
+      # The owning arm is gone (no delivered close recorded): relay the
+      # recorded reason ourselves so the wake still surfaces; the durable
+      # queue preserves it regardless.
+      cycle_log_append unknown unknown attached-actionable-relay none
+      printf '%s\n' "$(sed -n 's/^kind=[a-z][a-z]* epoch=[0-9][0-9]* watcher_pid=[0-9][0-9]* reason=//p' "$CLOSE_RECORD" 2>/dev/null | head -1)"
+      exit 0
     fi
     cycle_log_append unknown unknown attached-cycle-ended none
     fail_unexplained_cycle

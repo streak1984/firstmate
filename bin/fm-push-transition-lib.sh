@@ -31,12 +31,37 @@ triage_log() {
   fi
 }
 
+# Durable close record for the watcher's own actionable exit, written before
+# the reason is printed. The owning arm delivers the printed reason; a SECOND
+# arm that attached to this watcher (e.g. the Stop hook attaching to a
+# model-launched background-task cycle) never sees that output, so it classifies
+# the close from this record: an actionable record proves the cycle ended WITH a
+# reason, not reasonlessly, while the durable queue preserves the wake. A stale
+# record can never absolve a later close: the reading arm binds the record to
+# the closed watcher's pid and to its own attach epoch. Best-effort by design: a
+# failed write falls back to the arm's loud unexplained-close failure, never a
+# silent absolution. Single writer: the home's one watcher process.
+CLOSE_RECORD="$STATE/.watch-last-close"
+record_watch_close() {  # <reason>
+  local reason=$1 kind epoch
+  reason=$(printf '%s' "$reason" | LC_ALL=C tr '\t\r\n' '   ' | cut -c1-512)
+  kind=${reason%%:*}
+  [ "$kind" = "$reason" ] && kind=heartbeat
+  case "$kind" in
+    signal|stale|check|heartbeat) ;;
+    *) return 0 ;;
+  esac
+  epoch=$(date +%s)
+  printf 'kind=%s epoch=%s watcher_pid=%s reason=%s\n' "$kind" "$epoch" "${BASHPID:-$$}" "$reason" > "$CLOSE_RECORD" 2>/dev/null || true
+}
+
 # Exit after reporting one actionable wake. Tests override this callback.
 wake() {
   case "$1" in
     heartbeat*) echo $(( $(cat "$STATE/.heartbeat-streak" 2>/dev/null || echo 0) + 1 )) > "$STATE/.heartbeat-streak" ;;
     *) echo 0 > "$STATE/.heartbeat-streak" ;;
   esac
+  record_watch_close "$1"
   echo "$1"
   exit 0
 }

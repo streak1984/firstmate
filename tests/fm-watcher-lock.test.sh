@@ -612,6 +612,177 @@ test_attached_arm_signal_is_recorded_in_cycle_ledger() {
   pass "attached arm signals record a classified lifecycle entry"
 }
 
+test_attached_arm_actionable_close_with_owning_arm_is_clean() {
+  # Regression for the repeating false alarm "watcher: FAILED - cycle ended
+  # without an actionable reason". Two arms race on one watcher: an owning arm
+  # (a model-launched background task) started it, then a second arm (the Stop
+  # hook) attached to the healthy cycle. The watcher closes with a REAL
+  # actionable wake: the owning arm delivers the printed reason and the primary
+  # drains the durable queue, but the attached arm never sees the child output
+  # and no successor appears inside its bounded wait (the Claude flow only arms
+  # a successor at the next Stop). The watcher's own durable close record must
+  # prove the close was actionable, so the attached arm exits clean and silent
+  # instead of raising the typed failure.
+  local dir state fakebin out ownout armout drain_out i wpid own_arm armpid status
+  dir=$(make_case arm-attached-actionable-close)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  ownout="$dir/own-arm.out"
+  armout="$dir/arm.out"
+  drain_out="$dir/drain.out"
+  mark_pr_check_migration_complete "$state"
+  # The owning arm starts a real watcher and follows it as its child.
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=0.2 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH_ARM" > "$ownout" &
+  own_arm=$!
+  i=0
+  while [ "$i" -lt 80 ]; do
+    grep -qF 'watcher: started pid=' "$ownout" 2>/dev/null && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  wpid=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
+  grep -qF "watcher: started pid=$wpid" "$ownout" || fail "owning arm did not start its watcher"
+  # A second arm attaches to the same healthy watcher - the Stop-hook arm.
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_ARM_ATTACH_POLL=0.1 FM_ARM_CONFIRM_TIMEOUT=1 "$WATCH_ARM" > "$armout" &
+  armpid=$!
+  i=0
+  while [ "$i" -lt 80 ]; do
+    grep -qF "watcher: attached pid=$wpid" "$armout" 2>/dev/null && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  grep -qF "watcher: attached pid=$wpid" "$armout" || fail "second arm did not attach to the live watcher"
+  # The crew produces a real captain-relevant status: the watcher enqueues the
+  # durable wake, prints its reason, and closes the cycle.
+  printf 'done: synthetic attached-close wake\n' > "$state/task.status"
+  # The owning arm exits once its child watcher closes and it delivers the reason.
+  wait_for_exit "$own_arm" 120
+  status=$?
+  [ "$status" -eq 0 ] || fail "owning arm failed to deliver the actionable close (status $status): $(cat "$ownout")"
+  i=0
+  while [ "$i" -lt 80 ] && is_live_non_zombie "$wpid"; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  ! is_live_non_zombie "$wpid" || fail "watcher did not close with its actionable wake"
+  grep -E '^signal:' "$ownout" >/dev/null || fail "owning arm did not print the actionable reason: $(cat "$ownout")"
+  grep -q "watcher_pid=$wpid.*reason=actionable-signal" "$state/.watch-cycle-exits.log" \
+    || fail "owning arm did not record its delivered close in the lifecycle ledger"
+  # The primary drains the queue as it does at the start of the handling turn.
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" || fail "drain after attached close failed"
+  grep -F 'task.status' "$drain_out" >/dev/null \
+    || fail "the actionable wake was not preserved in the durable queue"
+  # The attached arm must classify the explained close as clean: exit 0, no
+  # FAILED, no duplicate reason line.
+  wait_for_exit "$armpid" 120
+  status=$?
+  [ "$status" -eq 0 ] || fail "attached arm exited $status for an explained actionable close: $(cat "$armout")"
+  ! grep -qF 'watcher: FAILED' "$armout" || fail "attached arm reported FAILED for an explained actionable close: $(cat "$armout")"
+  ! grep -qE '^(signal:|stale:|check:|heartbeat)' "$armout" || fail "attached arm duplicated the delivered reason: $(cat "$armout")"
+  grep -q "arm_pid=$armpid.*watcher_pid=$wpid.*origin=attached.*reason=attached-actionable-close" "$state/.watch-cycle-exits.log" \
+    || fail "explained attached close was not classified in the lifecycle ledger"
+  pass "attached arm treats an owning-arm-delivered actionable close as clean, not FAILED"
+}
+
+test_attached_arm_relays_actionable_close_when_no_owning_arm() {
+  # The attached arm is the only survivor: the closed watcher has no owning arm
+  # (its parent is gone), so no lifecycle row proves delivery. The close record
+  # still proves the cycle ended with an actionable wake - the attached arm must
+  # relay the recorded reason itself so the wake surfaces, never a false FAILED.
+  local dir state fakebin out armout drain_out i wpid armpid status
+  dir=$(make_case arm-attached-actionable-relay)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  armout="$dir/arm.out"
+  drain_out="$dir/drain.out"
+  mark_pr_check_migration_complete "$state"
+  # A live watcher with no parent arm holds the singleton.
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=0.2 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  wpid=$!
+  i=0
+  while [ "$i" -lt 60 ]; do
+    [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$wpid" ] && [ -e "$state/.last-watcher-beat" ] && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$wpid" ] || fail "seed watcher did not take the lock"
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_ARM_ATTACH_POLL=0.1 FM_ARM_CONFIRM_TIMEOUT=1 "$WATCH_ARM" > "$armout" &
+  armpid=$!
+  i=0
+  while [ "$i" -lt 80 ]; do
+    grep -qF "watcher: attached pid=$wpid" "$armout" 2>/dev/null && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  grep -qF "watcher: attached pid=$wpid" "$armout" || fail "arm did not attach to the live watcher"
+  printf 'done: synthetic relayed-close wake\n' > "$state/task.status"
+  wait_for_exit "$wpid" 120 || fail "watcher did not close with its actionable wake"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" || fail "drain after relayed close failed"
+  grep -F 'task.status' "$drain_out" >/dev/null || fail "the relayed wake was not preserved in the durable queue"
+  # No owning arm recorded delivery, so the attached arm relays the recorded
+  # reason instead of failing.
+  wait_for_exit "$armpid" 120
+  status=$?
+  [ "$status" -eq 0 ] || fail "attached arm exited $status instead of relaying the explained close: $(cat "$armout")"
+  ! grep -qF 'watcher: FAILED' "$armout" || fail "attached arm reported FAILED for an explained relayable close: $(cat "$armout")"
+  grep -E '^signal:' "$armout" >/dev/null || fail "attached arm did not relay the recorded actionable reason: $(cat "$armout")"
+  grep -q "arm_pid=$armpid.*watcher_pid=$wpid.*origin=attached.*reason=attached-actionable-relay" "$state/.watch-cycle-exits.log" \
+    || fail "relayed attached close was not classified in the lifecycle ledger"
+  pass "attached arm relays an actionable close when no owning arm delivered it"
+}
+
+test_attached_arm_stale_close_record_does_not_absolve_reasonless_close() {
+  # Away-mode handover residue: the daemon's watcher children also write close
+  # records. A stale record - an old epoch, or a different watcher pid - must
+  # never absolve a genuinely reasonless close of the currently attached
+  # watcher; the classification is bound to the attached watcher's pid and to
+  # the arm's attach epoch. Both variants must still fail loudly.
+  local row dir state fakebin out armout i wpid armpid status stale_pid
+  for row in other-pid same-pid-old-epoch; do
+    dir=$(make_case "arm-attached-stale-record-$row")
+    state="$dir/state"
+    fakebin="$dir/fakebin"
+    out="$dir/watch.out"
+    armout="$dir/arm.out"
+    stale_pid=$(dead_pid)
+    mark_pr_check_migration_complete "$state"
+    PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=0.2 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+    wpid=$!
+    i=0
+    while [ "$i" -lt 60 ]; do
+      [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$wpid" ] && [ -e "$state/.last-watcher-beat" ] && break
+      sleep 0.1
+      i=$((i + 1))
+    done
+    [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$wpid" ] || fail "seed watcher did not take the lock"
+    if [ "$row" = other-pid ]; then
+      printf 'kind=signal epoch=1 watcher_pid=%s reason=signal: /stale/daemon-watcher.status\n' "$stale_pid" > "$state/.watch-last-close"
+    else
+      printf 'kind=signal epoch=1 watcher_pid=%s reason=signal: /stale/daemon-watcher.status\n' "$wpid" > "$state/.watch-last-close"
+    fi
+    PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_ARM_ATTACH_POLL=0.1 FM_ARM_CONFIRM_TIMEOUT=1 "$WATCH_ARM" > "$armout" &
+    armpid=$!
+    i=0
+    while [ "$i" -lt 80 ]; do
+      grep -qF "watcher: attached pid=$wpid" "$armout" 2>/dev/null && break
+      sleep 0.1
+      i=$((i + 1))
+    done
+    grep -qF "watcher: attached pid=$wpid" "$armout" || fail "arm did not attach to the live watcher"
+    # The seed dies with no wake and no record of its own: genuinely reasonless.
+    kill "$wpid" 2>/dev/null || true
+    wait "$wpid" 2>/dev/null || true
+    wait_for_exit "$armpid" 120
+    status=$?
+    [ "$status" -ne 0 ] && [ "$status" -ne 124 ] || fail "attached arm did not fail after a reasonless close (stale record variant $row, status $status): $(cat "$armout")"
+    grep -qF 'watcher: FAILED - cycle ended without an actionable reason' "$armout" \
+      || fail "stale close record ($row) absolved a genuinely reasonless close: $(cat "$armout")"
+  done
+  pass "stale close records (other pid, old epoch) never absolve a reasonless attached close"
+}
+
 test_arm_starts_and_self_heals() {
   # Arming with no confirmable watcher must FORK one and confirm it live + fresh
   # before reporting 'started' - whether the lock is empty (clean start) or held
@@ -1031,6 +1202,9 @@ test_watch_restart_attaches_to_healthy_peer
 test_watcher_self_evicts_on_lock_takeover
 test_arm_self_eviction_is_loud_without_successor
 test_arm_attaches_and_waits_for_live_fresh_watcher
+test_attached_arm_actionable_close_with_owning_arm_is_clean
+test_attached_arm_relays_actionable_close_when_no_owning_arm
+test_attached_arm_stale_close_record_does_not_absolve_reasonless_close
 test_attached_arm_signal_is_recorded_in_cycle_ledger
 test_arm_starts_and_self_heals
 test_arm_hup_cleans_child_and_temp_output
