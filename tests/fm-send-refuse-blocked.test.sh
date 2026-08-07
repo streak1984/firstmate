@@ -138,7 +138,14 @@ test_fm_send_refuses_blocked_no_text_no_enter() {
   neutral="$dir/neutral-root"; mkdir -p "$neutral"
   fm_write_meta "$state/herdr-blocked.meta" "window=default:w1:p2" "backend=herdr"
   touch "$state/.last-watcher-beat"
-  printf '{"result":{"agent":{"agent_status":"blocked"}}}\n' > "$resp/1.out"
+  # 1: fm-send-refuse-dead-w1's pre-submit agent-registry check - pane_id
+  #    round-trips, proving the pane structurally exists
+  printf '{"result":{"pane":{"pane_id":"w1:p2"}}}\n' > "$resp/1.out"
+  # 2: same check's agent read - "blocked" is a registered (alive) agent, so
+  #    the registration check passes through to this w2 predicate
+  printf '{"result":{"agent":{"agent_status":"blocked"}}}\n' > "$resp/2.out"
+  # 3: fm-send's own pre-submit blocked check (this task, w2) - blocked
+  printf '{"result":{"agent":{"agent_status":"blocked"}}}\n' > "$resp/3.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_ROOT_OVERRIDE="$neutral" FM_HOME="$neutral" FM_STATE_OVERRIDE="$state" \
     FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_SEND_RETRIES=1 FM_SEND_SLEEP=0 FM_SEND_SETTLE=0 \
@@ -161,7 +168,12 @@ test_fm_send_verify_reports_blocked() {
   neutral="$dir/neutral-root"; mkdir -p "$neutral"
   fm_write_meta "$state/herdr-blocked.meta" "window=default:w1:p2" "backend=herdr"
   touch "$state/.last-watcher-beat"
-  printf '{"result":{"agent":{"agent_status":"blocked"}}}\n' > "$resp/1.out"
+  # See test_fm_send_refuses_blocked_no_text_no_enter for why this is 3 calls
+  # deep: fm-send-refuse-dead-w1's pre-submit agent-registry check (calls 1-2)
+  # runs before this task's own blocked check (call 3).
+  printf '{"result":{"pane":{"pane_id":"w1:p2"}}}\n' > "$resp/1.out"
+  printf '{"result":{"agent":{"agent_status":"blocked"}}}\n' > "$resp/2.out"
+  printf '{"result":{"agent":{"agent_status":"blocked"}}}\n' > "$resp/3.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_ROOT_OVERRIDE="$neutral" FM_HOME="$neutral" FM_STATE_OVERRIDE="$state" \
     FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_SEND_RETRIES=1 FM_SEND_SLEEP=0 FM_SEND_SETTLE=0 \
@@ -183,14 +195,19 @@ test_fm_send_idle_pane_still_delivers() {
   neutral="$dir/neutral-root"; mkdir -p "$neutral"
   fm_write_meta "$state/herdr-idle.meta" "window=default:w1:p2" "backend=herdr"
   touch "$state/.last-watcher-beat"
-  # 1: fm-send's pre-submit blocked check - not blocked (idle)
-  printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/1.out"
-  # 2: send-text (literal, no output)
-  # 3: agent get - pre-Enter baseline is idle
+  # 1: fm-send-refuse-dead-w1's pre-submit agent-registry check - pane_id
+  #    round-trips, proving the pane structurally exists
+  printf '{"result":{"pane":{"pane_id":"w1:p2"}}}\n' > "$resp/1.out"
+  # 2: same check's agent read - idle is a registered (alive) agent
+  printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/2.out"
+  # 3: fm-send's own pre-submit blocked check (this task, w2) - not blocked
   printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/3.out"
-  # 4: send-keys enter
-  # 5: agent get - agent_status working (a real turn started: submitted)
-  printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/5.out"
+  # 4: send-text (literal, no output)
+  # 5: agent get - pre-Enter baseline is idle
+  printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/5.out"
+  # 6: send-keys enter
+  # 7: agent get - agent_status working (a real turn started: submitted)
+  printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/7.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_ROOT_OVERRIDE="$neutral" FM_HOME="$neutral" FM_STATE_OVERRIDE="$state" \
     FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_SEND_RETRIES=3 FM_SEND_SLEEP=0.01 FM_SEND_SETTLE=0 \
