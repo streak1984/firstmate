@@ -32,16 +32,22 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # fm_send_verify_normalize: read one text on stdin, print its normalized form
 # on stdout: ANSI escapes stripped (fm_composer_strip_ansi), the composer box
-# border glyphs (│ ┃ ║) deleted, and every whitespace run - including the
-# newlines a wrapped message spans - collapsed into a single ASCII space, then
-# trimmed. LC_ALL=C keeps the byte walk deterministic under any caller locale;
-# the border glyphs are deleted as full UTF-8 sequences, so a multibyte
-# character that merely shares a byte with a border glyph is never mangled.
+# border glyphs (│ ┃ ║) deleted, the invisible U+2063 operational-marker
+# carrier (bin/fm-operational-input.sh) deleted, and every whitespace run -
+# including the newlines a wrapped message spans - collapsed into a single
+# ASCII space, then trimmed. LC_ALL=C keeps the byte walk deterministic under
+# any caller locale; the border glyphs are deleted as full UTF-8 sequences, so
+# a multibyte character that merely shares a byte with a border glyph is never
+# mangled. U+2063 is deleted (not spaced) because it is zero-width: a marked
+# secondmate message carries it invisibly, no pane ever renders it, and
+# leaving it in the message side would make every marked echo unmatchable.
 # Both the message and the capture pass through this same normalization, so
 # the two sides stay comparable.
+FM_SEND_VERIFY_U2063=$(printf '\xe2\x81\xa3')
 fm_send_verify_normalize() {
   LC_ALL=C fm_composer_strip_ansi \
     | LC_ALL=C sed 's/│/ /g; s/┃/ /g; s/║/ /g' \
+    | LC_ALL=C sed "s/$FM_SEND_VERIFY_U2063//g" \
     | LC_ALL=C tr -s '[:space:]' ' ' \
     | LC_ALL=C sed -e 's/^ //' -e 's/ $//'
 }
@@ -90,18 +96,33 @@ fm_send_verify_capable() {  # <backend>
 # "<verdict> <one short detail>" on stdout:
 #   landed  - composer no longer holds the message and the message matched in
 #             the pane capture (normalized match, see
-#             fm_send_verify_transcript_has).
+#             fm_send_verify_transcript_has); or the submit core positively
+#             confirmed submission ([submit-verdict] empty) and the fresh
+#             reads corroborate it: a clear composer on a busy pane, or a
+#             busy herdr pane whose composer is unreadable exactly because
+#             the agent is working (a working Pi refuses its separated
+#             composer shape by design) with a clean absent queue-entry read.
+#             Real panes rarely echo the message in matchable form (Pi does
+#             not echo steers at all; long messages collapse), so the echo is
+#             corroboration, never a requirement, once submission was
+#             positively confirmed.
 #   queued  - tmux: proven-pending composer on a busy pane (the opencode
 #             text-stays-visible busy-queue shape the submit core converts);
-#             herdr: the same pending-on-busy shape, or a busy pane showing
-#             the native pi "Steering:" queue-entry evidence.
+#             herdr: the same pending-on-busy shape, a busy pane showing the
+#             native pi "Steering:" queue-entry evidence, or a busy pane
+#             whose submit core already proved the queue entry
+#             ([submit-verdict] queued) even when that entry has since
+#             scrolled out of the evidence window.
 #   dropped - proven-pending composer on an idle pane (text stuck), or an
 #             empty composer on an idle pane with the message nowhere in the
-#             capture (text vanished). tmux pending-unproven on an idle pane
-#             also drops (the text IS in the composer).
+#             capture (text vanished) and no positive submit confirmation.
+#             tmux pending-unproven on an idle pane also drops (the text IS
+#             in the composer).
 #   unknown - unreadable composer, ambiguous composer text on a busy pane, a
-#             busy pane without queue evidence, an unreadable busy state, or
-#             a backend without the capability chain (see
+#             busy pane without queue evidence or submit confirmation, an
+#             unreadable busy state, a confirmed submit whose message is no
+#             longer visible on an idle pane (a fast turn that already
+#             ended), or a backend without the capability chain (see
 #             fm_send_verify_capable). Reported honestly, never guessed: an
 #             unreadable composer can neither confirm landed nor prove
 #             dropped, and a busy pane can still be mid-turn.
@@ -109,8 +130,12 @@ fm_send_verify_capable() {  # <backend>
 # arms also need fm_pane_is_busy from bin/fm-tmux-lib.sh, which the tmux
 # adapter loads through fm_backend_source. <harness> scopes the tmux
 # busy-footer signatures; [expected-label] flows into the capture call.
-fm_send_verify_classify() {  # <backend> <target> <harness> <message> [expected-label]
-  local backend=$1 target=$2 harness=$3 message=$4 label=${5:-}
+# [submit-verdict] is the send path's own proof-carrying verdict (empty for a
+# positively confirmed submission, queued for the herdr busy-queue
+# acceptance, anything else or absent for no confirmation evidence); an
+# absent submit-verdict preserves the strictly read-only classification.
+fm_send_verify_classify() {  # <backend> <target> <harness> <message> [expected-label] [submit-verdict]
+  local backend=$1 target=$2 harness=$3 message=$4 label=${5:-} submit=${6:-}
   local reason composer busy transcript evidence
   reason=$(fm_send_verify_capable "$backend") || { printf 'unknown %s' "$reason"; return 0; }
   fm_backend_source "$backend" \
@@ -134,9 +159,17 @@ fm_send_verify_classify() {  # <backend> <target> <harness> <message> [expected-
       if fm_send_verify_transcript_has "$message" "$transcript"; then
         printf 'landed composer cleared and message echoed in the pane capture'
       elif [ "$busy" = busy ]; then
-        printf 'unknown composer empty but message not echoed while the pane is busy'
+        if [ "$submit" = empty ]; then
+          printf 'landed submit confirmed and the composer is clear on the busy pane'
+        else
+          printf 'unknown composer empty but message not echoed while the pane is busy'
+        fi
       elif [ "$busy" = idle ]; then
-        printf 'dropped message found nowhere on an idle pane'
+        if [ "$submit" = empty ]; then
+          printf 'unknown submit confirmed but the message is no longer visible on the idle pane'
+        else
+          printf 'dropped message found nowhere on an idle pane'
+        fi
       else
         printf 'unknown cannot read the pane busy state'
       fi
@@ -164,6 +197,10 @@ fm_send_verify_classify() {  # <backend> <target> <harness> <message> [expected-
         evidence=$(fm_backend_herdr_submit_queue_evidence "$target" 2>/dev/null || printf 'unknown')
         if [ "$evidence" = queued ]; then
           printf 'queued busy pane shows an accepted queue entry'
+        elif [ "$submit" = empty ] && [ "$evidence" = absent ]; then
+          printf 'landed submit confirmed on the busy pane; composer unreadable while the agent works'
+        elif [ "$submit" = queued ]; then
+          printf 'queued submit core observed the accepted queue entry'
         else
           printf 'unknown busy pane without queue evidence'
         fi

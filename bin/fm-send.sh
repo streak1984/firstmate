@@ -21,11 +21,18 @@
 # explicit `queued (busy pane)` note instead of exiting non-zero.
 #
 # --verify classifies what happened to the message after the send path
-# completes and prints one final line: `verify: <landed|queued|dropped|unknown>
-# <one short detail>`.
+# completes and prints exactly one final line on EVERY completed invocation,
+# including the send-failure and unconfirmed-submit paths:
+# `verify: <landed|queued|dropped|unknown> <one short detail>`.
 #   landed  - the composer no longer holds the message and the pane capture
 #             echoes the message text (matched on a normalized form; see the
-#             matching method below).
+#             matching method below); or the submit core positively confirmed
+#             submission and the fresh reads corroborate it (a clear composer
+#             on a busy pane, or a busy herdr pane whose composer is
+#             unreadable exactly because the agent is working). Real panes
+#             often do not echo a steer in matchable form (pi never does), so
+#             the echo corroborates but is not required once submission was
+#             positively confirmed.
 #   queued  - the pane is busy and the composer state shows the busy-queue
 #             shape the submit core already recognizes: the harness accepted
 #             the message and will process it when its current turn ends
@@ -35,10 +42,16 @@
 #             duplicate-steer incident).
 #   dropped - the composer still holds the text after the retry budget on an
 #             idle pane, or the pane is idle with the text nowhere in the
-#             composer or the capture.
+#             composer or the capture and no positive submit confirmation.
 #   unknown - the pane could not be read conclusively, or the backend has no
 #             verification chain; reported honestly, never guessed.
-# Exit code contract: nonzero ONLY for dropped; unknown exits zero.
+# Exit code contract on a confirmed submit: nonzero ONLY for dropped; unknown
+# exits zero. When the submit core could NOT confirm delivery, --verify
+# classifies before refusing: a positively proven landed or queued result
+# rescues the send (exit 0, with a stderr note), while dropped and unknown
+# keep the loud nonzero refusal - unknown cannot overrule an unconfirmed
+# submit. A transport-level send failure always exits nonzero with
+# `verify: unknown transport send failed before submission`.
 # Verification NEVER re-sends under any outcome; the caller decides the next
 # step.
 # Transcript matching method: both the message and the pane capture are
@@ -358,14 +371,16 @@ else
   sleep_s=${FM_SEND_SLEEP:-0.4}
   # Type once, submit, verify. Only exact empty (or the herdr busy-queue
   # `queued` verdict) confirms delivery; every other verdict preserves the
-  # loud refusal boundary.
+  # loud refusal boundary. With --verify, an unconfirmed verdict is
+  # classified BEFORE refusing: the post-send reads can positively prove a
+  # landed or queued delivery the submit core missed (the documented pi
+  # instant round-trip), which rescues the send instead of inviting a
+  # duplicate re-send; without that positive proof the refusal stays loud.
   if ! verdict=$(fm_backend_send_text_submit "$TARGET_BACKEND" "$T" "$MESSAGE" "$retries" "$sleep_s" "$settle" "$EXPECTED_LABEL"); then
-    if [ "$PENDING_REPLY_CREATED" = 1 ] && [ -n "$PENDING_REPLY_CORR" ]; then
-      fm_pending_reply_discard_undelivered "$STATE" "$PENDING_REPLY_CORR" || true
-    fi
-    echo "error: text not sent to $T ($TARGET_BACKEND send failed; tried $RESOLUTION_TRIED)" >&2
-    exit 1
+    verdict=send-failed
   fi
+  VERIFY_RESULT=
+  VERIFY_RESCUED=0
   case "$verdict" in
     empty)
       ;;
@@ -383,14 +398,35 @@ else
         fm_pending_reply_discard_undelivered "$STATE" "$PENDING_REPLY_CORR" || true
       fi
       echo "error: text not sent to $T ($TARGET_BACKEND send failed; tried $RESOLUTION_TRIED)" >&2
+      if [ "$VERIFY" = 1 ]; then
+        printf 'verify: unknown transport send failed before submission\n'
+      fi
       exit 1
       ;;
     *)
-      if [ "$PENDING_REPLY_CREATED" = 1 ] && [ -n "$PENDING_REPLY_CORR" ]; then
-        fm_pending_reply_discard_undelivered "$STATE" "$PENDING_REPLY_CORR" || true
+      if [ "$VERIFY" = 1 ]; then
+        # No submit-verdict evidence is passed here: the submit core could
+        # not confirm, so the classification must stand on the fresh reads
+        # alone.
+        VERIFY_RESULT=$(fm_send_verify_classify "$TARGET_BACKEND" "$T" "$TARGET_HARNESS" "$MESSAGE" "$EXPECTED_LABEL") \
+          || VERIFY_RESULT='unknown classification read failed'
+        case "${VERIFY_RESULT%% *}" in
+          landed|queued)
+            VERIFY_RESCUED=1
+            echo "note: submit unconfirmed (verdict=${verdict:-unknown}), but post-send verification proves delivery; do not re-send" >&2
+            ;;
+        esac
       fi
-      echo "error: text not submitted to $T (delivery unconfirmed; verdict=${verdict:-unknown}; tried $RESOLUTION_TRIED)" >&2
-      exit 1
+      if [ "$VERIFY_RESCUED" = 0 ]; then
+        if [ "$PENDING_REPLY_CREATED" = 1 ] && [ -n "$PENDING_REPLY_CORR" ]; then
+          fm_pending_reply_discard_undelivered "$STATE" "$PENDING_REPLY_CORR" || true
+        fi
+        echo "error: text not submitted to $T (delivery unconfirmed; verdict=${verdict:-unknown}; tried $RESOLUTION_TRIED)" >&2
+        if [ "$VERIFY" = 1 ]; then
+          printf 'verify: %s\n' "$VERIFY_RESULT"
+        fi
+        exit 1
+      fi
       ;;
   esac
   # Delivery confirmed. Mark the pending expectation delivered without resolving
@@ -405,6 +441,9 @@ else
       else
         echo "error: text was delivered to $T, but its pending-reply delivery commit and recovery marker both failed. Do not resend; inspect $STATE manually." >&2
       fi
+      if [ "$VERIFY" = 1 ]; then
+        printf 'verify: unknown delivered but pending-reply bookkeeping failed; do not re-send\n'
+      fi
       exit 1
     fi
   fi
@@ -413,17 +452,25 @@ else
   # turn before its busy footer shows. Pause so an immediate peek catches the
   # crewmate actually working instead of the stale idle pane. A queued send
   # skips the pause: the pane was ALREADY busy when the message was accepted,
-  # so a peek right after finds it working. FM_SEND_SETTLE=0
-  # disables it. Scoped to this path only, never the shared submit core.
-  [ "${FM_SEND_SETTLE:-1}" = 0 ] || [ "$verdict" = queued ] || sleep "${FM_SEND_SETTLE:-1}"
+  # so a peek right after finds it working. A rescued send skips it too: its
+  # verification already ran after the fact, so the turn is under way.
+  # FM_SEND_SETTLE=0 disables it. Scoped to this path only, never the shared
+  # submit core.
+  [ "${FM_SEND_SETTLE:-1}" = 0 ] || [ "$verdict" = queued ] || [ "$VERIFY_RESCUED" = 1 ] \
+    || sleep "${FM_SEND_SETTLE:-1}"
   # --verify: classify what happened after the send path completed and print
-  # the single final answer line. Exit nonzero only for dropped; unknown is
-  # reported honestly and never re-sends (the caller decides the next step).
+  # the single final answer line. The submit core's own proof-carrying verdict
+  # is passed as corroborating evidence; a rescued send already classified
+  # (without that evidence) and prints that result. Exit nonzero only for
+  # dropped; unknown is reported honestly and never re-sends (the caller
+  # decides the next step).
   if [ "$VERIFY" = 1 ]; then
-    result=$(fm_send_verify_classify "$TARGET_BACKEND" "$T" "$TARGET_HARNESS" "$MESSAGE" "$EXPECTED_LABEL") \
-      || result='unknown classification read failed'
-    printf 'verify: %s\n' "$result"
-    case "${result%% *}" in
+    if [ -z "$VERIFY_RESULT" ]; then
+      VERIFY_RESULT=$(fm_send_verify_classify "$TARGET_BACKEND" "$T" "$TARGET_HARNESS" "$MESSAGE" "$EXPECTED_LABEL" "$verdict") \
+        || VERIFY_RESULT='unknown classification read failed'
+    fi
+    printf 'verify: %s\n' "$VERIFY_RESULT"
+    case "${VERIFY_RESULT%% *}" in
       dropped) exit 1 ;;
     esac
   fi

@@ -21,8 +21,16 @@
 #   7. dropped with the text vanished on an idle pane.
 #   8. unknown backend reported honestly with exit 0.
 #   9. unreadable composer states and busy panes without evidence never guess.
-#  10. default mode (no --verify) output unchanged.
-#  11. CLI end-to-end: landed exits 0, dropped exits 1, queued exits 0.
+#  10. real-pane shapes with submit-verdict evidence: a working pi pane whose
+#      composer read is refused is landed on a confirmed submit; a busy pane
+#      without a matchable echo is landed on a confirmed submit; a confirmed
+#      submit on an idle pane without an echo stays unknown (never a false
+#      dropped); the submit core's queued proof survives queue-entry scroll;
+#      the invisible U+2063 marker never breaks the echo match.
+#  11. default mode (no --verify) output unchanged.
+#  12. CLI end-to-end: landed exits 0; the unconfirmed-submit path prints its
+#      verify line (dropped exits 1, queued proof rescues to exit 0); a
+#      transport send failure prints its verify line; queued exits 0.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -66,13 +74,16 @@ classify_to() {  # <out-file> <backend> <message> [name=value...]
   # Assign the stub state into the current shell (not exported): the stubs are
   # functions, so plain shell variables reach them and their subshells, and
   # `env` could not invoke a function anyway. printf -v keeps the dynamic
-  # name shellcheck-clean without eval.
+  # name shellcheck-clean without eval. FM_STUB_SUBMIT feeds the optional
+  # submit-verdict evidence argument; unset preserves the read-only
+  # classification the pre-submit-evidence tests assert.
+  FM_STUB_SUBMIT=
   for a in "$@"; do
     name=${a%%=*}
     value=${a#*=}
     printf -v "$name" '%s' "$value"
   done
-  fm_send_verify_classify "$backend" win "" "$message" > "$out" 2>/dev/null
+  fm_send_verify_classify "$backend" win "" "$message" "" "$FM_STUB_SUBMIT" > "$out" 2>/dev/null
   rc=$?
   [ "$rc" = 0 ] || fail "classify exited $rc"
 }
@@ -232,6 +243,70 @@ test_herdr_pending_with_unreadable_busy_is_unknown() {
   pass "fm-send-verify: an unreadable busy state stays unknown (never a false dropped)"
 }
 
+# --- real-pane shapes: submit-verdict evidence -------------------------------
+#
+# The live-use regression class (task fm-send-verify-landed-line-v2): real
+# panes do not behave like the echo fixtures above. A working Pi refuses its
+# separated composer shape by design (composer reads unknown while busy), and
+# real harnesses rarely echo a steer in matchable form. The submit core's own
+# proof-carrying verdict is the missing evidence.
+
+test_landed_real_pi_working_composer_refused() {
+  local out
+  out="$TMP_ROOT/landed-pi-working"
+  classify_to "$out" herdr "steer: run the wake tests" \
+    FM_STUB_COMPOSER=unknown FM_STUB_BUSY=busy FM_STUB_EVIDENCE=absent \
+    FM_STUB_CAPTURE='transcript without any echo' FM_STUB_SUBMIT=empty
+  [ "$(cat "$out")" = "landed submit confirmed on the busy pane; composer unreadable while the agent works" ] \
+    || fail "a confirmed submit to a working pi pane must be landed, got '$(cat "$out")'"
+  pass "fm-send-verify: landed on the real working-pi shape (composer refused, submit confirmed)"
+}
+
+test_landed_confirmed_no_echo_busy_pane() {
+  local out
+  out="$TMP_ROOT/landed-no-echo-busy"
+  classify_to "$out" tmux "a long steer whose echo the harness collapsed" \
+    FM_STUB_COMPOSER=empty FM_STUB_TMUX_BUSY=1 \
+    FM_STUB_CAPTURE='Working on it... esc to interrupt' FM_STUB_SUBMIT=empty
+  [ "$(cat "$out")" = "landed submit confirmed and the composer is clear on the busy pane" ] \
+    || fail "a confirmed submit with a clear composer on a busy pane must be landed, got '$(cat "$out")'"
+  pass "fm-send-verify: landed when submit is confirmed and the busy pane shows no echo"
+}
+
+test_confirmed_idle_vanish_is_unknown_not_dropped() {
+  local out
+  out="$TMP_ROOT/confirmed-idle-vanish"
+  classify_to "$out" tmux "quick steer" \
+    FM_STUB_COMPOSER=empty FM_STUB_TMUX_BUSY=0 \
+    FM_STUB_CAPTURE='no echo anywhere' FM_STUB_SUBMIT=empty
+  [ "$(cat "$out")" = "unknown submit confirmed but the message is no longer visible on the idle pane" ] \
+    || fail "a confirmed submit must not report a false dropped on a fast turn, got '$(cat "$out")'"
+  pass "fm-send-verify: a confirmed submit on an idle pane is unknown, never a false dropped"
+}
+
+test_queued_submit_core_evidence_survives_scroll() {
+  local out
+  out="$TMP_ROOT/queued-evidence-scrolled"
+  classify_to "$out" herdr "steer while busy" \
+    FM_STUB_COMPOSER=unknown FM_STUB_BUSY=busy FM_STUB_EVIDENCE=absent \
+    FM_STUB_CAPTURE='the Steering entry has scrolled away' FM_STUB_SUBMIT=queued
+  [ "$(cat "$out")" = "queued submit core observed the accepted queue entry" ] \
+    || fail "the submit core's queued proof must survive evidence scroll, got '$(cat "$out")'"
+  pass "fm-send-verify: the submit core's queued proof survives queue-entry scroll"
+}
+
+test_marked_message_invisible_carrier_still_matches() {
+  local out marker
+  out="$TMP_ROOT/landed-marked"
+  marker=$(printf '\xe2\x81\xa3')
+  classify_to "$out" tmux "${marker}FIRSTMATE_OP: v1 corr=ab12 fix the build" \
+    FM_STUB_COMPOSER=empty FM_STUB_TMUX_BUSY=0 \
+    FM_STUB_CAPTURE='FIRSTMATE_OP: v1 corr=ab12 fix the build'
+  [ "$(cat "$out")" = "landed composer cleared and message echoed in the pane capture" ] \
+    || fail "the invisible U+2063 marker must not break the echo match, got '$(cat "$out")'"
+  pass "fm-send-verify: the invisible operational-marker carrier never breaks the echo match"
+}
+
 # --- CLI end-to-end ---------------------------------------------------------
 #
 # A fake tmux that lets fm-send's submit path reach a clean verdict and then
@@ -249,6 +324,7 @@ make_stubs() {  # <dir> -> echoes fakebin dir
 set -u
 case "${1:-}" in
   send-keys)
+    [ -z "${FM_FAKE_SEND_FAIL:-}" ] || exit 1
     shift
     is_enter=0
     while [ "$#" -gt 0 ]; do
@@ -269,7 +345,19 @@ case "${1:-}" in
     exit 0 ;;
   display-message)
     for a in "$@"; do
-      case "$a" in *cursor_y*) printf '%s\n' "${FM_FAKE_CURSOR_Y:-1}"; exit 0 ;; esac
+      case "$a" in
+        *cursor_y*)
+          # FM_FAKE_CURSOR_ONCE names a marker file: while it exists, the
+          # first cursor read is served garbage (an unreadable composer) and
+          # the marker is consumed, so the submit core sees an unconfirmable
+          # pane while the later --verify reads see the real fixture.
+          if [ -n "${FM_FAKE_CURSOR_ONCE:-}" ] && [ -f "$FM_FAKE_CURSOR_ONCE" ]; then
+            rm -f "$FM_FAKE_CURSOR_ONCE"
+            printf 'garbage\n'
+            exit 0
+          fi
+          printf '%s\n' "${FM_FAKE_CURSOR_Y:-1}"; exit 0 ;;
+      esac
     done
     printf 'fakepane\n'; exit 0 ;;
   capture-pane) cat "$FM_FAKE_PANE" 2>/dev/null; exit 0 ;;
@@ -339,17 +427,61 @@ test_cli_verify_landed_exit_zero() {
 }
 
 test_cli_verify_dropped_exit_nonzero() {
+  # A genuine swallow: the composer keeps the text on an idle pane, so the
+  # submit core reports pending (unconfirmed). The old code exited before the
+  # --verify block on every unconfirmed verdict - the live silent-landed-send
+  # defect - so this asserts the verify line now prints on that path too.
   local dir fb rc last
   dir="$TMP_ROOT/cli-dropped"; mkdir -p "$dir"
   fb=$(make_stubs "$dir")
-  printf 'nothing to see here\n╭──────────────╮\n│              │\n╰──────────────╯\n' > "$dir/pane"
-  run_send "$fb" "$dir/out" "$dir/err" FM_FAKE_PANE="$dir/pane" FM_FAKE_CURSOR_Y=3 \
-    -- --verify sess:win "hello captain"; rc=$?
+  printf 'idle pane text\n╭──────────────╮\n│ > fix build  │\n╰──────────────╯\n' > "$dir/pane"
+  touch "$dir/.swallow"
+  run_send "$fb" "$dir/out" "$dir/err" FM_FAKE_PANE="$dir/pane" FM_FAKE_CURSOR_Y=2 \
+    FM_FAKE_SWALLOW="$dir/.swallow" FM_FAKE_PERSIST_SWALLOW=1 \
+    -- --verify sess:win "fix build"; rc=$?
   expect_code 1 "$rc" "dropped verify should exit 1"
   last=$(tail -1 "$dir/out")
-  [ "$last" = "verify: dropped message found nowhere on an idle pane" ] \
-    || fail "expected a dropped verify line, got '$last'"$'\n'"--- out ---"$'\n'"$(cat "$dir/out")"
-  pass "fm-send --verify: dropped exits nonzero with the vanish detail"
+  [ "$last" = "verify: dropped composer still holds the message on an idle pane" ] \
+    || fail "expected a dropped verify line on the unconfirmed path, got '$last'"$'\n'"--- out ---"$'\n'"$(cat "$dir/out")"
+  pass "fm-send --verify: an unconfirmed swallow prints the dropped verify line and exits 1"
+}
+
+test_cli_verify_unconfirmed_rescue_queued() {
+  # The live silent-landed-send shape: the submit core cannot confirm (the
+  # first composer read is unreadable, verdict unknown), but the post-send
+  # reads prove the busy pane holds the accepted message. --verify must
+  # classify, print queued, and rescue the send to exit 0 instead of refusing
+  # with no verify line.
+  local dir fb rc last
+  dir="$TMP_ROOT/cli-rescue"; mkdir -p "$dir"
+  fb=$(make_stubs "$dir")
+  printf 'Working...\n╭──────────────╮\n│ > fix build  │\n╰──────────────╯\n' > "$dir/pane"
+  touch "$dir/.swallow" "$dir/.cursor-once"
+  run_send "$fb" "$dir/out" "$dir/err" FM_FAKE_PANE="$dir/pane" FM_FAKE_CURSOR_Y=2 \
+    FM_FAKE_SWALLOW="$dir/.swallow" FM_FAKE_PERSIST_SWALLOW=1 \
+    FM_FAKE_CURSOR_ONCE="$dir/.cursor-once" \
+    -- --verify sess:win "fix build"; rc=$?
+  expect_code 0 "$rc" "a rescued queued delivery should exit 0"
+  last=$(tail -1 "$dir/out")
+  [ "$last" = "verify: queued busy pane accepted the message for delivery at turn end" ] \
+    || fail "expected the rescued queued verify line, got '$last'"$'\n'"--- out ---"$'\n'"$(cat "$dir/out")"
+  assert_contains "$(cat "$dir/err")" "post-send verification proves delivery" \
+    "the rescue must note that verification overruled the unconfirmed verdict"
+  pass "fm-send --verify: an unconfirmed submit with queued proof is rescued to exit 0"
+}
+
+test_cli_verify_send_failed_prints_line() {
+  local dir fb rc last
+  dir="$TMP_ROOT/cli-send-failed"; mkdir -p "$dir"
+  fb=$(make_stubs "$dir")
+  printf 'idle\n' > "$dir/pane"
+  run_send "$fb" "$dir/out" "$dir/err" FM_FAKE_PANE="$dir/pane" FM_FAKE_SEND_FAIL=1 \
+    -- --verify sess:win "hello"; rc=$?
+  expect_code 1 "$rc" "a transport send failure should exit 1"
+  last=$(tail -1 "$dir/out")
+  [ "$last" = "verify: unknown transport send failed before submission" ] \
+    || fail "expected the transport-failure verify line, got '$last'"$'\n'"--- out ---"$'\n'"$(cat "$dir/out")"
+  pass "fm-send --verify: a transport send failure still prints its verify line"
 }
 
 test_cli_verify_queued_busy_pane() {
@@ -397,8 +529,14 @@ test_busy_pane_without_echo_is_unknown_not_dropped
 test_herdr_busy_without_evidence_is_unknown
 test_pending_unproven_never_promoted_to_queued
 test_herdr_pending_with_unreadable_busy_is_unknown
+test_landed_real_pi_working_composer_refused
+test_landed_confirmed_no_echo_busy_pane
+test_confirmed_idle_vanish_is_unknown_not_dropped
+test_queued_submit_core_evidence_survives_scroll
+test_marked_message_invisible_carrier_still_matches
 test_default_mode_output_unchanged
 test_cli_verify_landed_exit_zero
 test_cli_verify_dropped_exit_nonzero
-test_cli_verify_queued_busy_pane
+test_cli_verify_unconfirmed_rescue_queued
+test_cli_verify_send_failed_prints_line
 test_cli_verify_key_path_reports_unknown
