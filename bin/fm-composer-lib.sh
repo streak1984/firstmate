@@ -19,8 +19,20 @@
 # container - a bordered composer box, where the harness draws its own prompt
 # glyph (e.g. claude's older `| > ... |`). On a bare, unstructured row it is a
 # dead-shell prompt and is NEVER "empty"; it classifies as `unknown` (not a safe
-# injection target). The AGENT prompt glyphs `❯` (claude) and `›` (codex) are a
-# genuine empty agent composer either way, bordered or bare.
+# injection target). The AGENT prompt glyphs `❯` (claude) and `›` (codex)
+# inside a bordered container are unconditional proof, same as above.
+#
+# BARE AGENT GLYPH, no container (task fm-composer-glyph-w3): on this fleet
+# `❯` is ALSO the zsh/starship shell prompt, and it is ALSO the highlighted-row
+# marker inside a harness's own dialog menus (e.g. `❯ 1. Red`), so a bare `❯`
+# or `›` row is no longer unconditional proof of a genuine empty agent
+# composer. It classifies `empty` only when the caller supplies independent,
+# positive evidence that an agent owns the target, via the optional
+# [glyph_corroborated] argument below - Herdr's native agent registry
+# (`fm_backend_agent_alive`) or tmux's foreground-process evidence
+# (`#{pane_current_command}`). Without that corroboration it classifies
+# `unknown`, this owner's existing fail-safe direction, exactly like the
+# generic shell glyphs above.
 #
 # GHOST/PLACEHOLDER TEXT is the other half of this owner (task
 # afk-herdr-false-pending): a harness fills an otherwise-empty composer with
@@ -171,6 +183,13 @@ fm_composer_strip_ghost() {
 #              "Type a message...") that reads as empty; matched both before and
 #              after a leading prompt glyph is stripped, so a pattern written
 #              with or without the glyph both land.
+#   [glyph_corroborated] 1 when the caller has independent, positive evidence
+#              that an agent owns the target (Herdr's native agent registry, or
+#              tmux's foreground-process evidence); consulted ONLY to decide
+#              whether a BARE (unbordered) `❯`/`›` row - which is also a plain
+#              shell prompt on this fleet - may classify `empty`. Irrelevant
+#              when <bordered> is 1, since a genuine container is already
+#              sufficient proof. Defaults to 0, the fail-safe direction.
 fm_composer_idle_matches() {
   local content=$1 idle_re=$2 idle_case=$3
   [ -n "$idle_re" ] || return 1
@@ -180,20 +199,32 @@ fm_composer_idle_matches() {
   esac
 }
 
-fm_composer_classify_content() {  # <bordered> <content> [idle_re] [idle_case] [plain_content]
+fm_composer_classify_content() {  # <bordered> <content> [idle_re] [idle_case] [plain_content] [glyph_corroborated]
   local bordered=$1 content=$2 idle_re=${3:-} idle_case=${4:-sensitive} plain_content
+  local glyph_corroborated=${6:-0}
   plain_content=${5:-$content}
   if [ "$bordered" != 1 ] && [ -z "$content" ] && [ -n "$plain_content" ]; then
     case "$plain_content" in
-      '❯'|'›') printf 'empty'; return 0 ;;
+      '❯'|'›')
+        # Bare agent glyph, no container: also this fleet's shell prompt, so
+        # the glyph alone is not proof. Require the caller's corroboration.
+        if [ "$glyph_corroborated" = 1 ]; then printf 'empty'; else printf 'unknown'; fi
+        return 0 ;;
       *) printf 'unknown'; return 0 ;;
     esac
   fi
   # A bare prompt glyph on its own row.
   case "$content" in
     '❯'|'›')
-      # Agent prompt glyph: a genuine empty agent composer, bordered or bare.
-      printf 'empty'; return 0 ;;
+      if [ "$bordered" = 1 ]; then
+        # Agent prompt glyph inside a genuine composer container: the
+        # container itself is already sufficient proof.
+        printf 'empty'; return 0
+      fi
+      # Bare, unstructured row: also this fleet's shell prompt (and a dialog
+      # menu's highlighted-row marker), so the glyph alone proves nothing.
+      if [ "$glyph_corroborated" = 1 ]; then printf 'empty'; else printf 'unknown'; fi
+      return 0 ;;
     '>'|'$'|'%'|'#')
       # Shell prompt glyph: empty ONLY inside a composer box (the harness's own
       # prompt). Bare, it is a dead-shell prompt - never a safe injection target.

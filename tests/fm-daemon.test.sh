@@ -884,11 +884,18 @@ test_pane_input_pending_requires_proven_empty_prompt() {
       pane_input_pending "fakepane" \
       || fail "bare shell prompt '$prompt' should defer as unknown"
   done
+  # A bare agent glyph alone now also needs the pane's live foreground
+  # process to corroborate agent ownership (task fm-composer-glyph-w3): on
+  # this fleet the same glyph is also the zsh/starship shell prompt.
   for prompt in '❯' '›'; do
     printf 'output\noutput\n%s \n' "$prompt" > "$capture"
     if PATH="$fakebin:$PATH" FM_FAKE_TMUX_CAPTURE="$capture" FM_FAKE_TMUX_CURSOR_Y=2 \
+      FM_FAKE_TMUX_COMM=claude pane_input_pending "fakepane"; then
+      fail "an agent-corroborated proven empty agent prompt '$prompt' should not defer"
+    fi
+    if ! PATH="$fakebin:$PATH" FM_FAKE_TMUX_CAPTURE="$capture" FM_FAKE_TMUX_CURSOR_Y=2 \
       pane_input_pending "fakepane"; then
-      fail "proven empty agent prompt '$prompt' should not defer"
+      fail "an uncorroborated bare agent prompt '$prompt' (indistinguishable from a plain shell prompt) should defer"
     fi
   done
   pass "pane_input_pending: only proven empty agent prompts pass"
@@ -914,8 +921,11 @@ test_tmux_composer_state_bare_shell_is_unknown() {
 }
 
 # The other side of the fix: a bordered composer box (the harness draws its own
-# prompt glyph inside it) and a bare AGENT prompt glyph (claude ❯, codex ›) are
-# genuine empty agent composers and must still read `empty`.
+# prompt glyph inside it) is a genuine empty agent composer unconditionally,
+# and a bare AGENT prompt glyph (claude ❯, codex ›) is one when the pane's live
+# foreground process corroborates agent ownership (task fm-composer-glyph-w3:
+# the bare glyph is also this fleet's shell prompt, so it is no longer proof
+# by itself).
 test_tmux_composer_state_bordered_and_agent_rows_are_empty() {
   local dir fakebin capture out
   dir=$(make_supercase composer-empty-agent)
@@ -926,13 +936,31 @@ test_tmux_composer_state_bordered_and_agent_rows_are_empty() {
   [ "$out" = empty ] || fail "a bordered '│ > │' composer should read empty, got '$out'"
   printf '%s\n' "❯ " > "$capture"
   out=$(PATH="$fakebin:$PATH" FM_FAKE_TMUX_CAPTURE="$capture" FM_FAKE_TMUX_CURSOR_Y=0 \
-    fm_tmux_composer_state "fakepane")
-  [ "$out" = empty ] || fail "a bare claude '❯' composer should read empty, got '$out'"
+    FM_FAKE_TMUX_COMM=claude fm_tmux_composer_state "fakepane")
+  [ "$out" = empty ] || fail "an agent-corroborated bare claude '❯' composer should read empty, got '$out'"
   printf '%s\n' "› " > "$capture"
   out=$(PATH="$fakebin:$PATH" FM_FAKE_TMUX_CAPTURE="$capture" FM_FAKE_TMUX_CURSOR_Y=0 \
-    fm_tmux_composer_state "fakepane")
-  [ "$out" = empty ] || fail "a bare codex '›' composer should read empty, got '$out'"
-  pass "fm_tmux_composer_state: a bordered composer box and bare agent glyphs (❯/›) still read empty"
+    FM_FAKE_TMUX_COMM=codex fm_tmux_composer_state "fakepane")
+  [ "$out" = empty ] || fail "an agent-corroborated bare codex '›' composer should read empty, got '$out'"
+  pass "fm_tmux_composer_state: a bordered composer box always, and agent-corroborated bare agent glyphs (❯/›), still read empty"
+}
+
+# The shell-prompt collision itself (task fm-composer-glyph-w3, report.md
+# finding F1): the same bare glyphs with NO process corroboration - what a
+# dead-shell husk pane, or this fleet's own zsh/starship prompt, renders as -
+# must not be misread as a genuine empty agent composer.
+test_tmux_composer_state_bare_agent_glyph_without_corroboration_is_unknown() {
+  local dir fakebin capture out g
+  dir=$(make_supercase composer-uncorroborated-agent-glyph)
+  fakebin="$dir/fakebin"; capture="$dir/pane.txt"
+  for g in '❯' '›'; do
+    printf '%s\n' "$g " > "$capture"
+    out=$(PATH="$fakebin:$PATH" FM_FAKE_TMUX_CAPTURE="$capture" FM_FAKE_TMUX_CURSOR_Y=0 \
+      fm_tmux_composer_state "fakepane")
+    [ "$out" = unknown ] \
+      || fail "an uncorroborated bare agent glyph '$g' must read unknown, got '$out'"
+  done
+  pass "fm_tmux_composer_state: a bare agent glyph with no process corroboration reads unknown, not empty"
 }
 
 test_tmux_composer_state_requires_matching_box_borders() {
@@ -1875,6 +1903,7 @@ test_pane_input_pending_blank_is_not_pending
 test_pane_input_pending_requires_proven_empty_prompt
 test_tmux_composer_state_bare_shell_is_unknown
 test_tmux_composer_state_bordered_and_agent_rows_are_empty
+test_tmux_composer_state_bare_agent_glyph_without_corroboration_is_unknown
 test_tmux_composer_state_requires_matching_box_borders
 test_pane_input_pending_honors_idle_override_after_border_strip
 test_classify_signal_dedup_against_scan

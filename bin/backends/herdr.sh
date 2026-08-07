@@ -2004,6 +2004,14 @@ fm_backend_herdr_strip_ansi() {  # <text>
 #              deliberately narrower than the bordered content classifier so a
 #              no-agent shell fallback prompt (`>`, `$`, `%`, or `#`) falls
 #              through to `unknown` instead of being misread as delivered.
+#              The bare shape's OWN glyph is not proof of an agent either (task
+#              fm-composer-glyph-w3): on this fleet the identical `❯` glyph is
+#              also the zsh/starship shell prompt and a dialog menu's
+#              highlighted-row marker, so an `empty` verdict for the bare shape
+#              additionally requires Herdr's native agent registry
+#              (`fm_backend_agent_alive`) to confirm the target as `alive`;
+#              otherwise it stays `unknown`, same fail-safe direction as the
+#              generic shell glyphs.
 #   separated - Pi's composer is one or more content rows between two solid
 #              horizontal `─` separator rows, with no prompt glyph or side
 #              borders. This shape is accepted ONLY when Herdr's native
@@ -2131,7 +2139,7 @@ fm_backend_herdr_agent_identity_raw() {  # <session> <pane> -> <agent>\t<status>
 
 fm_backend_herdr_composer_state() {  # <target> -> empty|pending|unknown
   local target=$1 session pane cap line trimmed found=0 shape="" raw_match="" bordered=0 stripped
-  local identity agent agent_status row=0 generic_line=0
+  local identity agent agent_status row=0 generic_line=0 glyph_corroborated=0
   fm_backend_herdr_parse_target "$target" || { printf 'unknown'; return 0; }
   session=$FM_BACKEND_HERDR_SESSION
   pane=$FM_BACKEND_HERDR_PANE
@@ -2223,12 +2231,23 @@ EOF
     # composer container, equivalent to a bordered box for shared content
     # classification. ANSI stripping keeps real text and drops only styling.
     bordered=1
+  elif [ "$shape" = bare ] && { [ "$stripped" = '❯' ] || [ "$stripped" = '›' ]; }; then
+    # A bare row starting with FM_BACKEND_HERDR_BARE_PROMPT_RE ('^(❯|›)') is
+    # NOT proof of an agent composer by itself when it is the glyph ALONE
+    # (task fm-composer-glyph-w3): on this fleet the same glyph is the
+    # zsh/starship shell prompt AND a dialog menu's highlighted-row marker,
+    # and the bottom-most-match scan above can select either. Corroborate
+    # with Herdr's own agent registry, the one deterministic signal this
+    # backend has that the bare glyph is not proof of on its own. Consulted
+    # only for this exact glyph-alone shape - real trailing content already
+    # classifies pending regardless, so the extra round trip is skipped for
+    # the common busy-composer case.
+    case "$(fm_backend_herdr_agent_alive "$target")" in
+      alive) glyph_corroborated=1 ;;
+    esac
   fi
-  # Delegate the empty/pending/unknown decision to the shared owner. The bare
-  # shape only ever starts with an AGENT glyph (FM_BACKEND_HERDR_BARE_PROMPT_RE
-  # is '^(❯|›)'), so a bare shell prompt never reaches here - it stays 'unknown'
-  # via the no-composer-row path above, exactly as before.
-  fm_composer_classify_content "$bordered" "$stripped" "$FM_BACKEND_HERDR_IDLE_RE"
+  # Delegate the empty/pending/unknown decision to the shared owner.
+  fm_composer_classify_content "$bordered" "$stripped" "$FM_BACKEND_HERDR_IDLE_RE" "" "" "$glyph_corroborated"
 }
 
 # fm_backend_herdr_submit_queue_evidence: structural evidence that a BUSY pane

@@ -2041,11 +2041,33 @@ test_composer_state_claude_unbordered_prompt_is_empty() {
   local dir log resp fb out
   dir="$TMP_ROOT/composer-claude-bare-empty"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   printf '  20\n  21\n\n\xe2\x9c\xbb Worked for 2s\n\n\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\n\xe2\x9d\xaf\n\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\n  Opus 4.8 (1M context)   \xe2\x96\x8d               3%%\n  \xe2\x86\x90 for agents\n' > "$resp/1.out"
+  # A bare glyph-alone row now also corroborates agent ownership via Herdr's
+  # own registry (task fm-composer-glyph-w3): pane get, then agent get,
+  # reporting a genuinely registered, idle claude agent.
+  printf '{"result":{"pane":{"pane_id":"w1:p2"}}}\n' > "$resp/2.out"
+  printf '{"result":{"agent":{"agent":"claude","agent_status":"idle"}}}\n' > "$resp/3.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_composer_state default:w1:p2' "$ROOT" )
-  [ "$out" = empty ] || fail "a genuinely idle, unbordered real-claude '❯' prompt row (no border glyph anywhere in view) should read empty, got '$out' (regression: this used to read 'unknown' forever, which is exactly what broke escalate_flush's buffer-clear)"
-  pass "fm_backend_herdr_composer_state: a real-claude unbordered '❯' prompt row (no border box in view) reads empty"
+  [ "$out" = empty ] || fail "a genuinely idle, unbordered real-claude '❯' prompt row (no border glyph anywhere in view), corroborated by a registered agent, should read empty, got '$out' (regression: this used to read 'unknown' forever, which is exactly what broke escalate_flush's buffer-clear)"
+  pass "fm_backend_herdr_composer_state: a real-claude unbordered '❯' prompt row (no border box in view), agent-corroborated, reads empty"
+}
+
+test_composer_state_claude_unbordered_prompt_without_agent_corroboration_is_unknown() {
+  local dir log resp fb out
+  dir="$TMP_ROOT/composer-claude-bare-uncorroborated"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  # The exact same bare '❯' row, but the agent registry reports nothing
+  # registered - this is what a dead-shell husk pane produces (report.md
+  # finding F1, probe 4), and must NOT read empty.
+  printf '  20\n  21\n\n\xe2\x9c\xbb Worked for 2s\n\n\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\n\xe2\x9d\xaf\n\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\n  Opus 4.8 (1M context)   \xe2\x96\x8d               3%%\n  \xe2\x86\x90 for agents\n' > "$resp/1.out"
+  printf '{"result":{"pane":{"pane_id":"w1:p2"}}}\n' > "$resp/2.out"
+  printf '{"error":{"code":"agent_not_found"}}\n' > "$resp/3.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_composer_state default:w1:p2' "$ROOT" )
+  [ "$out" = unknown ] \
+    || fail "a bare '❯' row with no registered agent (a dead-shell husk, or the fleet's own zsh/starship prompt) must read unknown, got '$out'"
+  pass "fm_backend_herdr_composer_state: a bare '❯' row with no registered agent reads unknown, not empty"
 }
 
 test_composer_state_claude_unbordered_prompt_is_pending() {
@@ -2096,11 +2118,15 @@ test_composer_state_claude_dim_prompt_suggestion_ghost_is_empty() {
   local dir log resp fb out
   dir="$TMP_ROOT/composer-claude-dim-ghost"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   printf '\xe2\x9c\xbb Brewed for 2m 40s\n\n\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\n\xe2\x9d\xaf \x1b[0m\x1b[2mwhat did the wheelhouse healing verification find?\x1b[0m\n\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\n  Fable 5                 80%%\n' > "$resp/1.out"
+  # The ghost strips away to a glyph-alone row, so agent-registry
+  # corroboration is consulted (task fm-composer-glyph-w3).
+  printf '{"result":{"pane":{"pane_id":"w1:p3"}}}\n' > "$resp/2.out"
+  printf '{"result":{"agent":{"agent":"claude","agent_status":"idle"}}}\n' > "$resp/3.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_composer_state default:w1:p3' "$ROOT" )
-  [ "$out" = empty ] || fail "the overnight shape - claude's SGR-2 dim prompt-suggestion ghost after a bare '❯' - must read empty, got '$out' (regression: this false-pending wedged away-mode injection all night)"
-  pass "fm_backend_herdr_composer_state: claude's dim prompt-suggestion ghost (the overnight wedge shape) reads empty"
+  [ "$out" = empty ] || fail "the overnight shape - claude's SGR-2 dim prompt-suggestion ghost after a bare '❯', agent-corroborated - must read empty, got '$out' (regression: this false-pending wedged away-mode injection all night)"
+  pass "fm_backend_herdr_composer_state: claude's dim prompt-suggestion ghost (the overnight wedge shape), agent-corroborated, reads empty"
 }
 
 # Same prompt row, but the text after "❯" is REAL (normal intensity, no dim) -
@@ -2150,22 +2176,47 @@ test_composer_state_codex_bare_prompt_glyph_is_empty() {
   local dir log resp fb out
   dir="$TMP_ROOT/composer-codex-bare"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   printf '\xe2\x80\xa2 You have 2 usage limit resets available.\n\n\xe2\x80\xba\n\n  gpt-5.5 xhigh \xc2\xb7 Context 100%% left\n' > "$resp/1.out"
+  # A bare glyph-alone row corroborates agent ownership via Herdr's own
+  # registry (task fm-composer-glyph-w3): pane get, then agent get, reporting
+  # a genuinely registered, idle codex agent.
+  printf '{"result":{"pane":{"pane_id":"w1:p2"}}}\n' > "$resp/2.out"
+  printf '{"result":{"agent":{"agent":"codex","agent_status":"idle"}}}\n' > "$resp/3.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_composer_state default:w1:p2' "$ROOT" )
-  [ "$out" = empty ] || fail "a bare '›' (codex) prompt glyph with no trailing text should read empty, got '$out'"
-  pass "fm_backend_herdr_composer_state: a real-codex unbordered '›' prompt row reads empty"
+  [ "$out" = empty ] || fail "a bare '›' (codex) prompt glyph with no trailing text, agent-corroborated, should read empty, got '$out'"
+  pass "fm_backend_herdr_composer_state: a real-codex unbordered '›' prompt row, agent-corroborated, reads empty"
 }
 
 test_composer_state_codex_faint_suggestion_is_empty() {
   local dir log resp fb out
   dir="$TMP_ROOT/composer-codex-faint-suggestion"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   printf '\xe2\x80\xa2 You have 2 usage limit resets available. Run /usage\nto use one.\n\n\x1b[0m\x1b[1m\xe2\x80\xba \x1b[0m\x1b[2mFind and fix a bug in @filename\x1b[0m\n\n  gpt-5.5 xhigh \xc2\xb7 Context 100%% left\n' > "$resp/1.out"
+  printf '{"result":{"pane":{"pane_id":"w1:p2"}}}\n' > "$resp/2.out"
+  printf '{"result":{"agent":{"agent":"codex","agent_status":"idle"}}}\n' > "$resp/3.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_composer_state default:w1:p2' "$ROOT" )
-  [ "$out" = empty ] || fail "a faint real-codex ghost suggestion should read empty, not pending, got '$out'"
-  pass "fm_backend_herdr_composer_state: a faint real-codex ghost suggestion reads empty"
+  [ "$out" = empty ] || fail "a faint real-codex ghost suggestion, agent-corroborated, should read empty, not pending, got '$out'"
+  pass "fm_backend_herdr_composer_state: a faint real-codex ghost suggestion, agent-corroborated, reads empty"
+}
+
+test_composer_state_codex_bare_prompt_glyph_without_agent_corroboration_is_unknown() {
+  local dir log resp fb out
+  dir="$TMP_ROOT/composer-codex-bare-uncorroborated"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  # The same bare '›' row, but Herdr's agent registry reports nothing
+  # registered - a dead-shell husk pane, or (on a fleet where codex's own
+  # prompt glyph collided with a shell's) the shell itself. Must not read
+  # empty (task fm-composer-glyph-w3, report.md finding F1).
+  printf '\xe2\x80\xa2 You have 2 usage limit resets available.\n\n\xe2\x80\xba\n\n  gpt-5.5 xhigh \xc2\xb7 Context 100%% left\n' > "$resp/1.out"
+  printf '{"result":{"pane":{"pane_id":"w1:p2"}}}\n' > "$resp/2.out"
+  printf '{"error":{"code":"agent_not_found"}}\n' > "$resp/3.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_composer_state default:w1:p2' "$ROOT" )
+  [ "$out" = unknown ] \
+    || fail "a bare '›' row with no registered agent must read unknown, got '$out'"
+  pass "fm_backend_herdr_composer_state: a bare '›' row with no registered agent reads unknown, not empty"
 }
 
 test_composer_state_codex_non_faint_same_text_is_pending() {
@@ -2420,11 +2471,13 @@ test_composer_state_codex_dynamic_idle_tip_reads_empty_when_faint() {
   local dir log resp fb out
   dir="$TMP_ROOT/composer-codex-dynamic-tip"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   printf '\xe2\x80\xa2 OK\n\n\n\x1b[0m\x1b[1m\xe2\x80\xba \x1b[0m\x1b[2mSummarize recent commits\x1b[0m\n\n  gpt-5.5 xhigh \xc2\xb7 Context 97%% left \xc2\xb7 /private/tmp \xc2\xb7 2\xe2\x80\xa6\n' > "$resp/1.out"
+  printf '{"result":{"pane":{"pane_id":"w1:p2"}}}\n' > "$resp/2.out"
+  printf '{"result":{"agent":{"agent":"codex","agent_status":"idle"}}}\n' > "$resp/3.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_composer_state default:w1:p2' "$ROOT" )
-  [ "$out" = empty ] || fail "a faint real-codex dynamic idle-tip row should read empty, got '$out'"
-  pass "fm_backend_herdr_composer_state: a faint real-codex dynamic idle-tip composer row reads empty"
+  [ "$out" = empty ] || fail "a faint real-codex dynamic idle-tip row, agent-corroborated, should read empty, got '$out'"
+  pass "fm_backend_herdr_composer_state: a faint real-codex dynamic idle-tip composer row, agent-corroborated, reads empty"
 }
 
 # Regression guard for the PRE-injection empty-box guard itself
@@ -3178,6 +3231,7 @@ test_composer_state_pi_separator_real_text_is_pending
 test_composer_state_pi_incomplete_separator_below_stale_generic_is_unknown
 test_composer_state_pi_separator_requires_safe_native_identity
 test_composer_state_claude_unbordered_prompt_is_empty
+test_composer_state_claude_unbordered_prompt_without_agent_corroboration_is_unknown
 test_composer_state_claude_unbordered_prompt_is_pending
 test_composer_state_bare_prompt_below_stale_bordered_banner_wins
 test_composer_state_claude_dim_prompt_suggestion_ghost_is_empty
@@ -3185,6 +3239,7 @@ test_composer_state_claude_dim_ghost_row_with_real_text_is_pending
 test_composer_state_grok_dark_truecolor_placeholder_is_empty
 test_composer_state_grok_bright_truecolor_real_text_is_pending
 test_composer_state_codex_bare_prompt_glyph_is_empty
+test_composer_state_codex_bare_prompt_glyph_without_agent_corroboration_is_unknown
 test_composer_state_codex_faint_suggestion_is_empty
 test_composer_state_codex_non_faint_same_text_is_pending
 test_wait_for_working_returns_busy_on_first_poll

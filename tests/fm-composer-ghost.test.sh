@@ -36,9 +36,12 @@ ESC=$(printf '\033')
 # escape-free line for the plain (peek) path. capture-pane returns the styled
 # fixture verbatim WITH -e (mirrors `tmux capture-pane -e`), and the same content
 # with SGR sequences stripped WITHOUT -e (mirrors a plain capture). cursor_y comes
-# from FM_FAKE_CY. The fake deliberately returns the complete fixture for every
-# capture, which exercises the structural scan while preserving the historical
-# single-row fallback fixtures.
+# from FM_FAKE_CY, and the pane's live foreground process (task
+# fm-composer-glyph-w3's bare-glyph corroboration) comes from FM_FAKE_COMM,
+# defaulting to "fakepane" - a name that matches neither a known harness nor a
+# known shell, i.e. no corroboration. The fake deliberately returns the complete
+# fixture for every capture, which exercises the structural scan while
+# preserving the historical single-row fallback fixtures.
 make_fake_tmux() {  # <dir>
   local dir=$1 fb="$1/fakebin"
   mkdir -p "$fb"
@@ -48,6 +51,7 @@ set -u
 case "${1:-}" in
   display-message)
     for a in "$@"; do case "$a" in *cursor_y*) printf '%s\n' "${FM_FAKE_CY:-0}"; exit 0 ;; esac; done
+    for a in "$@"; do case "$a" in *pane_current_command*) printf '%s\n' "${FM_FAKE_COMM:-fakepane}"; exit 0 ;; esac; done
     printf 'fakepane\n'; exit 0 ;;
   capture-pane)
     has_e=0
@@ -161,9 +165,11 @@ test_dim_ghost_only_composer_is_not_pending() {
   dir="$TMP_ROOT/ghost-only"; mkdir -p "$dir"
   fb=$(make_fake_tmux "$dir")
   capture="$dir/styled.txt"
-  # The exact rendering claude emits: a normal prompt glyph + a DIM predicted prompt.
+  # The exact rendering claude emits: a normal prompt glyph + a DIM predicted
+  # prompt. FM_FAKE_COMM=claude corroborates the bare glyph as a genuine agent
+  # composer (task fm-composer-glyph-w3), matching this being a real claude pane.
   printf '\xe2\x9d\xaf \033[2mWhat is the largest country by area?\033[0m\n' > "$capture"
-  if PATH="$fb:$PATH" FM_FAKE_STYLED="$capture" FM_FAKE_CY=0 \
+  if PATH="$fb:$PATH" FM_FAKE_STYLED="$capture" FM_FAKE_CY=0 FM_FAKE_COMM=claude \
      fm_pane_input_pending "fakepane"; then
     fail "dim ghost-only composer falsely read as pending"
   fi
@@ -228,9 +234,11 @@ test_dark_truecolor_ghost_only_composer_is_not_pending() {
   capture="$dir/styled.txt"
   # A grok-style pristine composer: bright prompt glyph + a dark/muted truecolor
   # placeholder. It must read NOT pending (the grok TRUECOLOR gap, now covered by
-  # the same ANSI-aware owner as claude's dim ghost).
+  # the same ANSI-aware owner as claude's dim ghost). FM_FAKE_COMM=grok
+  # corroborates the bare glyph as a genuine agent composer (task
+  # fm-composer-glyph-w3), matching this being a real grok pane.
   printf '\xe2\x9d\xaf \033[38;2;50;47;70mType a message...\033[0m\n' > "$capture"
-  if PATH="$fb:$PATH" FM_FAKE_STYLED="$capture" FM_FAKE_CY=0 \
+  if PATH="$fb:$PATH" FM_FAKE_STYLED="$capture" FM_FAKE_CY=0 FM_FAKE_COMM=grok \
      fm_pane_input_pending "fakepane"; then
     fail "dark truecolor ghost-only composer falsely read as pending"
   fi
@@ -523,23 +531,45 @@ test_fallback_capture_race_with_edge_is_unknown() {
 }
 
 test_legitimate_empty_routes_remain_empty() {
-  local dir fb capture out fixture cursor
+  local dir fb capture out fixture cursor comm
   dir="$TMP_ROOT/legitimate-empty"; mkdir -p "$dir"
   fb=$(make_fake_tmux "$dir")
   capture="$dir/styled.txt"
   for fixture in bordered double-bordered agent-prompt blank; do
+    comm=fakepane
     case "$fixture" in
       bordered) printf '╭────╮\n│    │\n╰────╯\n' > "$capture"; cursor=1 ;;
       double-bordered) printf '╔════╗\n║    ║\n╚════╝\n' > "$capture"; cursor=1 ;;
-      agent-prompt) printf '›\n' > "$capture"; cursor=0 ;;
+      # A bare agent-glyph row is a genuine empty composer only when the
+      # pane's live foreground process corroborates agent ownership (task
+      # fm-composer-glyph-w3) - here, a real codex process, matching an
+      # actual idle worker so ordinary steering to it stays unchanged.
+      agent-prompt) printf '›\n' > "$capture"; cursor=0; comm=codex ;;
       blank) printf '\n' > "$capture"; cursor=0 ;;
     esac
-    out=$(PATH="$fb:$PATH" FM_FAKE_STYLED="$capture" FM_FAKE_CY="$cursor" \
+    out=$(PATH="$fb:$PATH" FM_FAKE_STYLED="$capture" FM_FAKE_CY="$cursor" FM_FAKE_COMM="$comm" \
       fm_tmux_composer_state "fakepane")
     [ "$out" = empty ] \
       || fail "legitimate empty route '$fixture' should remain empty, got '$out'"
   done
   pass "fm_tmux_composer_state: only proven structural and non-bordered empty routes stay empty"
+}
+
+test_bare_agent_prompt_without_process_corroboration_is_unknown() {
+  local dir fb capture out
+  dir="$TMP_ROOT/bare-agent-prompt-uncorroborated"; mkdir -p "$dir"
+  fb=$(make_fake_tmux "$dir")
+  capture="$dir/styled.txt"
+  # This fleet's own zsh/starship prompt renders as exactly this row (task
+  # fm-composer-glyph-w3, report.md finding F1): without positive process
+  # evidence that an agent owns the pane, it must NOT read as an empty agent
+  # composer, or a dead-shell husk pane would look like a safe injection target.
+  printf '❯\n' > "$capture"
+  out=$(PATH="$fb:$PATH" FM_FAKE_STYLED="$capture" FM_FAKE_CY=0 FM_FAKE_COMM=zsh \
+    fm_tmux_composer_state "fakepane")
+  [ "$out" = unknown ] \
+    || fail "a bare agent glyph on a plain shell pane must read unknown, got '$out'"
+  pass "fm_tmux_composer_state: a bare agent glyph on a plain shell pane (no process corroboration) reads unknown"
 }
 
 test_non_bordered_composer_uses_compatibility_fallback() {
@@ -623,6 +653,7 @@ test_all_tmux_harness_composers_share_classification
 test_unrecognized_state_defers_input_guard
 test_fallback_capture_race_with_edge_is_unknown
 test_legitimate_empty_routes_remain_empty
+test_bare_agent_prompt_without_process_corroboration_is_unknown
 test_non_bordered_composer_uses_compatibility_fallback
 test_non_bordered_interior_edges_are_pending
 test_peek_output_is_escape_free

@@ -126,9 +126,14 @@ fm_tmux_strip_ghost() { fm_composer_strip_ghost; }
 
 # fm_tmux_composer_row_state: classify one raw styled candidate row.
 # A structural caller forces bordered=1; the compatibility fallback passes 0
-# and may recognize a busy footer.
-fm_tmux_composer_row_state() {  # <raw-row> [bordered] [allow-busy] -> empty|pending|unknown
-  local raw=$1 bordered=${2:-0} allow_busy=${3:-1} plain stripped
+# and may recognize a busy footer. [glyph_corroborated] is forwarded verbatim
+# to fm_composer_classify_content (bin/fm-composer-lib.sh): with bordered=0 it
+# is the ONLY thing that can turn a bare `❯`/`›` row into `empty` rather than
+# `unknown`, since on this fleet that glyph is also the shell prompt (task
+# fm-composer-glyph-w3). Callers inside an already-proven box (bordered=1)
+# never need it.
+fm_tmux_composer_row_state() {  # <raw-row> [bordered] [allow-busy] [glyph_corroborated] -> empty|pending|unknown
+  local raw=$1 bordered=${2:-0} allow_busy=${3:-1} glyph_corroborated=${4:-0} plain stripped
   plain=$(printf '%s\n' "$raw" | fm_composer_strip_ansi)
   plain="${plain#"${plain%%[![:space:]]*}"}"
   plain="${plain%"${plain##*[![:space:]]}"}"
@@ -147,7 +152,7 @@ fm_tmux_composer_row_state() {  # <raw-row> [bordered] [allow-busy] -> empty|pen
      && printf '%s' "$stripped" | grep -qiE "${FM_BUSY_REGEX:-$FM_TMUX_BUSY_REGEX_DEFAULT}"; then
     printf 'empty'; return 0
   fi
-  fm_composer_classify_content "$bordered" "$stripped" "${FM_COMPOSER_IDLE_RE:-}" insensitive "$plain"
+  fm_composer_classify_content "$bordered" "$stripped" "${FM_COMPOSER_IDLE_RE:-}" insensitive "$plain" "$glyph_corroborated"
 }
 
 fm_tmux_row_has_composer_edge() {  # <plain-row>
@@ -312,11 +317,13 @@ EOF
 # overwrite input or confirm delivery must accept only the exact positive proof
 # they require, so unrecognized future verdicts fail safe by default. Empty
 # requires positive proof: a genuinely empty composer, an all-empty unambiguous
-# box, an empty non-bordered fallback row, or the submit core's proven
-# busy-queued Enter conversion.
+# box, an empty non-bordered fallback row whose bare agent glyph is
+# corroborated by the pane's live foreground process (task
+# fm-composer-glyph-w3 - the glyph alone is also this fleet's shell prompt),
+# or the submit core's proven busy-queued Enter conversion.
 fm_tmux_composer_state() {  # <target> -> empty|pending|pending-unproven|unknown
   local target=$1 cy raw pane plain box box_status top bottom geometry_ambiguous
-  local row row_raw state unknown_seen=0
+  local row row_raw state unknown_seen=0 comm glyph_corroborated
   cy=$(tmux display-message -p -t "$target" '#{cursor_y}' 2>/dev/null) || { printf 'unknown'; return 0; }
   case "$cy" in ''|*[!0-9]*) printf 'unknown'; return 0 ;; esac
   pane=$(tmux capture-pane -e -p -t "$target" -S 0 -E - 2>/dev/null) || { printf 'unknown'; return 0; }
@@ -362,7 +369,21 @@ fm_tmux_composer_state() {  # <target> -> empty|pending|pending-unproven|unknown
     printf 'unknown'
     return 0
   fi
-  fm_tmux_composer_row_state "$raw" 0
+  # A bare row's OWN agent glyph is not proof of an agent (task
+  # fm-composer-glyph-w3): on this fleet `❯` is also the zsh/starship shell
+  # prompt. tmux has no agent registry, so corroborate with the pane's live
+  # foreground process instead - the same harness-vs-shell process-name
+  # evidence fm_backend_tmux_agent_state (bin/backends/tmux.sh) uses for
+  # recovery-grade liveness. Anything else (a shell, an unrecognized process,
+  # or an unreadable pane) stays uncorroborated, this owner's fail-safe
+  # direction.
+  glyph_corroborated=0
+  comm=$(tmux display-message -p -t "$target" '#{pane_current_command}' 2>/dev/null)
+  comm=${comm#-}
+  case "$comm" in
+    *claude*|*codex*|*opencode*|*grok*|*kimi*|pi|pi-signed|pi-launcher|Pi) glyph_corroborated=1 ;;
+  esac
+  fm_tmux_composer_row_state "$raw" 0 1 "$glyph_corroborated"
 }
 
 # fm_pane_input_pending: 0 when the composer is not proven empty, so pending

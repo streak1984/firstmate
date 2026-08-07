@@ -131,6 +131,11 @@ case "${1:-}" in
     # Return cursor_y when the format asks for it (pane_input_pending).
     for _a in "$@"; do
       case "$_a" in *cursor_y*) printf '%s\n' "${FM_FAKE_TMUX_CURSOR_Y:-0}"; exit 0 ;; esac
+      # The pane's live foreground process (task fm-composer-glyph-w3's bare-
+      # glyph corroboration). Defaults to "fakepane" - not a known harness or
+      # shell name, i.e. no corroboration - so existing fixtures are
+      # unaffected unless a test explicitly sets FM_FAKE_TMUX_COMM.
+      case "$_a" in *pane_current_command*) printf '%s\n' "${FM_FAKE_TMUX_COMM:-fakepane}"; exit 0 ;; esac
       [ "$_a" = "-p" ] && _print=1
     done
     [ "$_print" = 1 ] && printf 'fakepane\n'
