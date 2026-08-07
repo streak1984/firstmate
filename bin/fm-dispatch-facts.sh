@@ -294,11 +294,20 @@ providers_map as $providers
              worstWin: (if $pace == null then UNKNOWN else u($pace.worstReserveWindowId) end),
              stateStatus: u($p.state.status),
              authStatus: u($p.state.authStatus),
-             stale: (($p.state.stale == true) or ($p.state.status == "stale")),
+             # Stale is a tri-state fact: a provider whose snapshot carries no
+             # state (or a state with neither a stale flag nor a status) has
+             # an UNKNOWN staleness, never a healthy "not stale" default.
+             stale: (if ($p.state // null) == null then UNKNOWN
+                     elif (($p.state | has("stale")) | not) and (($p.state | has("status")) | not) then UNKNOWN
+                     else (($p.state.stale == true) or ($p.state.status == "stale")) end),
              credits: u($p.credits.remaining),
+             # A source entry missing its source or status renders those
+             # fields as UNKNOWN: jq's null + "=" concatenation would
+             # otherwise silently render a bare "=" cell.
              authSources: (if ($auths[$e.value.provider] // null) == null then UNKNOWN
                            else [($auths[$e.value.provider].sources // [])[]
-                                 | {source, status} + (if has("path") then {path} else {} end)]
+                                 | {source: (.source // UNKNOWN), status: (.status // UNKNOWN)}
+                                   + (if has("path") then {path} else {} end)]
                            end)
            }
       )

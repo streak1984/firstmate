@@ -22,6 +22,10 @@
 #   (i) -h/--help prints the header usage and exits 0
 #   (j) fixture mode never launches a vendor CLI (empty fakebin PATH)
 #   (k) --json emits the same facts with "unknown" strings for absent fields
+#   (l) a provider without a state object renders stale as unknown, never a
+#       healthy "not stale" default
+#   (m) an auth source entry missing source/status renders those fields as
+#       unknown, never a bare "=" cell or JSON nulls
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -297,6 +301,45 @@ test_help_prints_usage() {
   pass "fm-dispatch-facts: -h/--help prints the header usage and exits 0"
 }
 
+test_absent_state_stale_is_unknown_not_healthy() {
+  # A provider entry with NO state object has an unknown staleness. The old
+  # code defaulted it to "not stale" - a healthy default for an absent fact -
+  # and the table's unknown branch for the stale column was unreachable.
+  local quota cand out err="$TMP_ROOT/stale-unknown.err"
+  quota="$TMP_ROOT/quota-nostate.json"
+  printf '%s' '{"providers":[{"provider":"claude","credits":{"remaining":5}}]}' > "$quota"
+  cand='[{"harness":"claude","model":"opus","provider":"claude"}]'
+  out=$(printf '%s' "$cand" | "$FACTS" --quota-file "$quota" --auth-file "$AUTH_FIXTURE" --json 2>"$err") \
+    || fail "stale-unknown: fm-dispatch-facts failed"
+  printf '%s' "$out" | jq -e '.[0].stale == "unknown"' >/dev/null \
+    || fail "stale-unknown: absent state must render stale as unknown, got: $out"
+  out=$(printf '%s' "$cand" | "$FACTS" --quota-file "$quota" --auth-file "$AUTH_FIXTURE" 2>"$err") \
+    || fail "stale-unknown: table mode failed"
+  printf '%s\n' "$out" | grep -E '^unknowns\[0\]:' | grep -qw stale \
+    || fail "stale-unknown: the unknowns line must name stale, got: $out"
+  pass "fm-dispatch-facts: a provider without state renders stale as unknown, never healthy"
+}
+
+test_auth_source_missing_fields_render_unknown() {
+  # An auth source entry missing source or status renders those fields as
+  # "unknown". jq's null + "=" concatenation silently rendered a bare "="
+  # table cell before, and the JSON leaked nulls where the contract promises
+  # "unknown".
+  local auth cand out err="$TMP_ROOT/auth-missing.err"
+  auth="$TMP_ROOT/auth-badsource.json"
+  printf '%s' '{"auth":[{"provider":"claude","sources":[{"path":"/x/creds"}]}]}' > "$auth"
+  cand='[{"harness":"claude","model":"opus","provider":"claude"}]'
+  out=$(printf '%s' "$cand" | "$FACTS" --quota-file "$QUOTA_FIXTURE" --auth-file "$auth" --json 2>"$err") \
+    || fail "auth-missing: fm-dispatch-facts failed"
+  printf '%s' "$out" | jq -e '.[0].authSources[0].source == "unknown" and .[0].authSources[0].status == "unknown" and .[0].authSources[0].path == "/x/creds"' >/dev/null \
+    || fail "auth-missing: missing source fields must render unknown, got: $out"
+  out=$(printf '%s' "$cand" | "$FACTS" --quota-file "$QUOTA_FIXTURE" --auth-file "$auth" 2>"$err") \
+    || fail "auth-missing: table mode failed"
+  printf '%s\n' "$out" | grep -q 'unknown=unknown' \
+    || fail "auth-missing: the table cell must show unknown=unknown, got: $out"
+  pass "fm-dispatch-facts: auth sources with missing fields render unknown, never a bare ="
+}
+
 test_fixture_mode_never_launches_vendor_cli() {
   local fakebin out err="$TMP_ROOT/t9.err"
   fakebin=$(fm_fakebin "$TMP_ROOT/no-vendor-cli")
@@ -317,4 +360,6 @@ test_malformed_candidate_refused
 test_input_order_preserved
 test_candidates_file_matches_stdin
 test_help_prints_usage
+test_absent_state_stale_is_unknown_not_healthy
+test_auth_source_missing_fields_render_unknown
 test_fixture_mode_never_launches_vendor_cli
