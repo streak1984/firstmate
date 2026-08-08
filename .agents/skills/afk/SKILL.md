@@ -211,8 +211,8 @@ the operational prefix lets firstmate distinguish it from a real captain message
   text firstmate sees is clean.
 - **Portable singleton lock** - the daemon uses the repo's portable lock helper
   (`fm-wake-lib.sh`) instead of `flock`, which is absent on macOS.
-- **Dedupe across signal/stale/scan** - `classify_signal` and terminal `classify_stale` paths check the seen-status marker before escalating, so a captain-relevant status escalated by one path is not re-escalated by another in the same digest.
-  The marker does not clear or suppress possible-wedge aging for a nonterminal progress line.
+- **Dedupe across signal/stale/scan** - `classify_signal` and terminal `classify_stale` paths check the seen-status marker so a captain-relevant status escalated by one path is not repeated as status text by another in the same digest.
+  Seen-status dedupe never clears possible-wedge aging for an observed-idle open task, including when its last line is terminal; only a declared `paused:` external wait moves to the longer pause cadence.
 - **Auto-discovered supervisor pane** - the daemon resolves its own BACKEND
   (tmux vs herdr) and TARGET independently, mirroring
   `bin/fm-backend.sh`'s own runtime auto-detection. Backend: `FM_SUPERVISOR_BACKEND`
@@ -232,7 +232,9 @@ the operational prefix lets firstmate distinguish it from a real captain message
 
 Treat `state/.subsuper-escalations`, its `.since` sidecar, and `state/.subsuper-inject-wedged` as session-scoped delivery artifacts, not as the durable work record.
 Always enter through `bin/fm-afk-launch.sh`, which clears prior-session artifacts only for a fresh entry and preserves the current session's buffer on refresh.
-Always exit through `bin/fm-afk-launch.sh stop`, which keeps `state/.afk` present through the daemon's shutdown flush and clears it last.
+Always exit through `bin/fm-afk-launch.sh stop`, which keeps `state/.afk` present through the daemon's shutdown flush and clears it only after daemon exit is confirmed.
+An unconfirmed terminal cleanup remains exactly recorded without contradicting a complete daemon-and-flag stop.
+If the flag cannot clear, the launcher retains it only after a fresh fallback daemon is live; `fm-afk-return.sh` verifies that pairing before it reports the failed shutdown for retry.
 `docs/herdr-backend.md` "Away-mode supervisor support" owns the current mechanism, and `docs/verification/runtime-backends.md` "Away-mode transport" owns active evidence.
 
 ## Reliability properties

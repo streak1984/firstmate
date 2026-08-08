@@ -19,15 +19,20 @@ install_runner() {  # <case-dir>
   cp "$ROOT/bin/fm-afk-return.sh" "$dir/bin/"
   cp "$ROOT/bin/fm-wake-lib.sh" "$dir/bin/"
   cp "$ROOT/bin/fm-classify-lib.sh" "$dir/bin/"
-  cat > "$dir/bin/fm-afk-launch.sh" <<'SH'
+cat > "$dir/bin/fm-afk-launch.sh" <<'SH'
 #!/usr/bin/env bash
+[ "${1:-}" = verify-active ] && {
+  [ -e "$FM_HOME/state/.afk" ] && [ -e "$FM_HOME/state/.fallback-live" ]
+  exit $?
+}
 [ "${1:-}" = stop ] || exit 2
 printf 'stop\n' >> "$FM_HOME/stop.log"
-rm -f "$FM_HOME/state/.afk"
 if [ -e "$FM_HOME/state/.fail-terminal-stop-once" ]; then
   rm -f "$FM_HOME/state/.fail-terminal-stop-once"
+  : > "$FM_HOME/state/.fallback-live"
   exit 1
 fi
+rm -f "$FM_HOME/state/.afk" "$FM_HOME/state/.fallback-live"
 rm -f "$FM_HOME/state/.afk-daemon-terminal"
 SH
   cat > "$dir/bin/fm-wake-drain.sh" <<'SH'
@@ -200,13 +205,16 @@ test_check_retries_recorded_terminal_teardown() {
   [ "$rc" -eq 3 ] || fail "failed terminal teardown should keep return catch-up gated (rc=$rc): $out"
   [ -e "$gate" ] || fail "failed terminal teardown cleared the return gate"
   [ -e "$dir/home/state/.afk-daemon-terminal" ] || fail "failed terminal teardown discarded its durable record"
-  [ ! -e "$dir/home/state/.afk" ] || fail "failed terminal teardown did not preserve stop ordering"
+  [ -e "$dir/home/state/.afk" ] || fail "failed shutdown did not preserve the away flag"
+  [ -e "$dir/home/state/.fallback-live" ] || fail "failed shutdown did not arm its live fallback"
+  assert_contains "$out" '.afk and a live fallback supervisor were verified for retry' \
+    "return path did not verify the launcher's failed-shutdown fallback contract"
 
   out=$(run_return "$dir" check) || fail "check did not retry recorded terminal teardown: $out"
   [ ! -e "$dir/home/state/.afk-daemon-terminal" ] || fail "successful check left the terminal teardown record behind"
   [ ! -e "$gate" ] || fail "successful terminal teardown retry left the return gate behind"
   [ "$(wc -l < "$dir/home/stop.log" | tr -d ' ')" -eq 2 ] || fail "check did not retry terminal teardown exactly once"
-  pass "check retries recorded terminal teardown and keeps catch-up gated until success"
+  pass "check retries an atomic failed shutdown only after verifying its live fallback"
 }
 
 test_return_gate_orders_catchup_before_bearings

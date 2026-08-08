@@ -149,7 +149,11 @@ return_reconcile() {
   if [ -e "$STATE/.afk" ] || [ -e "$STATE/.afk-daemon-terminal" ]; then
     if ! "$SCRIPT_DIR/fm-afk-launch.sh" stop; then
       lifecycle_ok=0
-      append_evidence lifecycle 'away-mode shutdown failed; lifecycle state preserved for retry' "$evidence"
+      if "$SCRIPT_DIR/fm-afk-launch.sh" verify-active; then
+        append_evidence lifecycle 'away-mode shutdown failed; .afk and a live fallback supervisor were verified for retry' "$evidence"
+      else
+        append_evidence lifecycle 'away-mode shutdown failed atomic verification; .afk and live supervisor state disagree' "$evidence"
+      fi
     fi
   fi
 

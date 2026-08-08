@@ -207,6 +207,7 @@ Claude Code's primary watcher protocol is Stop-owned: the auto-arm hook fires on
 | Fact | Value |
 |---|---|
 | Busy state | Unknown until a semantic source is live-verified: the app-server turn lifecycle is unreachable for a pane worker, and project lifecycle hooks did not fire for a firstmate-launched worker. |
+| Rendered idle watchdog | `esc to interrupt` is present in the bounded pane tail while a turn is running and absent after Codex ends the turn; this adapter-scoped token drives only the watcher's 180-second continuous-idle alarm and never changes the semantic `unknown codex-unverified` verdict. |
 | Exit command | `/quit` (slash popup needs about 1 second between text and Enter; `fm-send` handles it) |
 | Interrupt | single Escape |
 | Skill invocation | `$<skill>` (e.g. `$no-mistakes`); `/<skill>` is claude-only and codex rejects it as "Unrecognized command" |
@@ -220,6 +221,11 @@ This is why the validation trigger (`$no-mistakes`) to a codex crew now lands on
 Directory trust dialog on first run per repo root: "Do you trust the contents of this directory?"
 Accept with Enter.
 The decision persists for the repo, so later worktrees of the same project skip it.
+
+First launch after project hooks change can show `Hooks need review` with `Review hooks`, `Trust all and continue`, and `Continue without trusting` choices.
+`fm-spawn.sh` positively matches the complete menu, moves once from the default review choice to `Trust all and continue`, submits once, and confirms the menu cleared.
+Trust-all is the crew-pane answer because Firstmate generated this disposable worktree and its supervision hooks for the worker, while continuing without trust would disable the hooks that make stopped work visible.
+The dialog and rendered-idle token behavior were observed on 2026-08-08 in firstmate-launched Codex crew panes.
 
 Resume after exit with `codex resume <session-id>`.
 The session id is printed on quit.

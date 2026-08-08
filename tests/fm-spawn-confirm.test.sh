@@ -57,7 +57,20 @@ case "${1:-}" in
     ;;
   list-windows|has-session|new-session|set-window-option|kill-window) ;;
   new-window) printf '%s\n' %1 ;;
-  send-keys) printf '%s\n' "$*" >> "$FM_FAKE_KEYS_LOG" ;;
+  send-keys)
+    printf '%s\n' "$*" >> "$FM_FAKE_KEYS_LOG"
+    if [ -n "${FM_FAKE_CODEX_DIALOG_FILE:-}" ] && [ -e "$FM_FAKE_CODEX_DIALOG_FILE" ]; then
+      case "${!#}" in
+        Down) printf 'trust\n' > "$FM_FAKE_CODEX_DIALOG_SELECTION" ;;
+        Enter)
+          if [ "$(cat "$FM_FAKE_CODEX_DIALOG_SELECTION" 2>/dev/null || true)" = trust ] \
+             && [ "${FM_FAKE_CODEX_DIALOG_STICKY:-0}" != 1 ]; then
+            rm -f "$FM_FAKE_CODEX_DIALOG_FILE"
+          fi
+          ;;
+      esac
+    fi
+    ;;
   capture-pane)
     n=0
     [ -f "$FM_FAKE_CAPTURE_COUNT" ] && n=$(cat "$FM_FAKE_CAPTURE_COUNT")
@@ -69,7 +82,19 @@ case "${1:-}" in
       "$FM_FAKE_ROOT/bin/fm-busy-event.sh" apply "$FM_FAKE_STATE" "$FM_FAKE_ID" busy \
         --gen "$gen" --source claude-hook --event user-prompt-submit >/dev/null 2>&1 || true
     fi
-    printf '%s\n' "${FM_FAKE_PANE_CAPTURE:-}"
+    if [ "${FM_FAKE_CODEX_HOOKS_DIALOG:-0}" = 1 ] && [ ! -e "$FM_FAKE_CODEX_DIALOG_SHOWN" ]; then
+      : > "$FM_FAKE_CODEX_DIALOG_SHOWN"
+      : > "$FM_FAKE_CODEX_DIALOG_FILE"
+    fi
+    if [ -n "${FM_FAKE_CODEX_DIALOG_FILE:-}" ] && [ -e "$FM_FAKE_CODEX_DIALOG_FILE" ]; then
+      printf '%s\n' 'Hooks need review'
+      printf '%s\n' '4 hooks are new or changed'
+      printf '%s\n' 'Review hooks'
+      printf '%s\n' 'Trust all and continue'
+      printf '%s\n' 'Continue without trusting'
+    else
+      printf '%s\n' "${FM_FAKE_PANE_CAPTURE:-}"
+    fi
     ;;
 esac
 exit 0
@@ -125,6 +150,8 @@ run_spawn() {
   : > "$TMP_ROOT/$id.keys"
   : > "$TMP_ROOT/$id.captures"
   : > "$TMP_ROOT/$id.pane-id"
+  rm -f "$TMP_ROOT/$id.codex-dialog" "$TMP_ROOT/$id.codex-dialog-shown" \
+    "$TMP_ROOT/$id.codex-dialog-selection"
   local -a spawn_args=("$id" "$project")
   if [ -n "$raw_launch" ]; then
     spawn_args+=("$raw_launch")
@@ -142,10 +169,17 @@ run_spawn() {
     FM_FAKE_PANE_CAPTURE="$pane_capture" \
     FM_FAKE_KEYS_LOG="$TMP_ROOT/$id.keys" FM_FAKE_CAPTURE_COUNT="$TMP_ROOT/$id.captures" \
     FM_FAKE_PANE_ID_COUNT="$TMP_ROOT/$id.pane-id" \
+    FM_FAKE_CODEX_DIALOG_FILE="$TMP_ROOT/$id.codex-dialog" \
+    FM_FAKE_CODEX_DIALOG_SHOWN="$TMP_ROOT/$id.codex-dialog-shown" \
+    FM_FAKE_CODEX_DIALOG_SELECTION="$TMP_ROOT/$id.codex-dialog-selection" \
     FM_FAKE_STATE="$home/state" FM_FAKE_ID="$id" FM_FAKE_ROOT="$ROOT" \
     FM_SPAWN_AUTONOMY_POLLS=1 FM_SPAWN_AUTONOMY_POLL_INTERVAL=0 \
     env "${extra[@]+"${extra[@]}"}" TMUX='fake,1,0' PATH="$fakebin:$PATH" \
     "$SPAWN" "${spawn_args[@]}" 2>&1
+}
+
+down_count() {  # <keys-log>
+  grep -c ' Down$' "$1" 2>/dev/null || true
 }
 
 # confirm_line_is_final <out>: the confirm: line must be the LAST stdout line,
@@ -284,6 +318,48 @@ EOF
   pass "fm-spawn: an unconfirmable harness/backend pair gets a capped confirm window"
 }
 
+test_codex_hooks_trust_dialog_is_deliberately_accepted() {
+  local id="confirm-codex-hooks-$$" rec home project worktree fakebin out rc=0
+  rec=$(make_case codex-hooks codex "$id")
+  IFS='|' read -r home project worktree fakebin <<EOF
+$rec
+EOF
+  out=$(run_spawn "$home" "$project" "$worktree" "$fakebin" "$id" codex \
+    FM_FAKE_CODEX_HOOKS_DIALOG=1 FM_SPAWN_CONFIRM_TIMEOUT=2 \
+    FM_SPAWN_CONFIRM_POLL_INTERVAL=0.01 FM_CODEX_HOOKS_TRUST_CLEAR_POLLS=3 \
+    FM_CODEX_HOOKS_TRUST_CLEAR_POLL_INTERVAL=0) || rc=$?
+  expect_code 0 "$rc" "a matched Codex hooks-trust dialog must be accepted"
+  assert_contains "$out" "spawned $id harness=codex" "accepted Codex hooks dialog blocked spawn completion"
+  [ "$(down_count "$TMP_ROOT/$id.keys")" = 1 ] \
+    || fail "Codex hooks dialog did not select Trust all and continue exactly once"
+  [ "$(enter_count "$TMP_ROOT/$id.keys")" = 5 ] \
+    || fail "Codex hooks dialog did not submit exactly one trust answer"
+  [ ! -e "$TMP_ROOT/$id.codex-dialog" ] || fail "Codex hooks dialog remained after acceptance"
+  [ ! -f "$home/state/$id.status" ] \
+    || assert_no_grep 'blocked:' "$home/state/$id.status" "accepted Codex hooks dialog appended a blocked status"
+  pass "fm-spawn: Codex hooks dialog selects Trust all and continue and confirms it cleared"
+}
+
+test_codex_hooks_trust_dialog_persistence_fails_spawn() {
+  local id="confirm-codex-hooks-sticky-$$" rec home project worktree fakebin out rc=0
+  rec=$(make_case codex-hooks-sticky codex "$id")
+  IFS='|' read -r home project worktree fakebin <<EOF
+$rec
+EOF
+  out=$(run_spawn "$home" "$project" "$worktree" "$fakebin" "$id" codex \
+    FM_FAKE_CODEX_HOOKS_DIALOG=1 FM_FAKE_CODEX_DIALOG_STICKY=1 \
+    FM_SPAWN_CONFIRM_TIMEOUT=2 FM_SPAWN_CONFIRM_POLL_INTERVAL=0.01 \
+    FM_CODEX_HOOKS_TRUST_CLEAR_POLLS=2 FM_CODEX_HOOKS_TRUST_CLEAR_POLL_INTERVAL=0) || rc=$?
+  expect_code 1 "$rc" "a persistent Codex hooks-trust dialog must fail the spawn"
+  assert_contains "$out" 'confirm: failed hooks-trust-dialog-persisted' \
+    "persistent Codex hooks dialog did not produce a typed failure"
+  assert_grep 'blocked: the Codex hooks trust dialog did not clear' "$home/state/$id.status" \
+    "persistent Codex hooks dialog did not append a blocked status"
+  [ "$(down_count "$TMP_ROOT/$id.keys")" = 1 ] \
+    || fail "persistent Codex hooks dialog got more than one selection attempt"
+  pass "fm-spawn: a Codex hooks dialog that survives the one trust attempt fails loudly"
+}
+
 # A bordered composer box with real text and the cursor on its content row:
 # the shared tmux composer reader classifies it pending. Every row's inner
 # width is identical (23), so the geometry is proven, not ambiguous.
@@ -377,6 +453,8 @@ test_parked_prompt_is_reported_as_dialog_without_keystrokes
 test_dead_endpoint_yields_failed
 test_unverified_harness_is_unknown_at_timeout
 test_unconfirmable_harness_window_is_capped
+test_codex_hooks_trust_dialog_is_deliberately_accepted
+test_codex_hooks_trust_dialog_persistence_fails_spawn
 test_template_launch_with_unsubmitted_text_yields_failed
 test_raw_launch_composer_lookalike_is_not_failed
 test_secondmate_spawn_prints_no_confirm_line

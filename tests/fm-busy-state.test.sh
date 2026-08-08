@@ -261,6 +261,20 @@ test_codex_unverified_gate() {
   pass "codex classifies unknown until a semantic source passes its verification gate"
 }
 
+test_rendered_idle_watchdog_is_harness_scoped() {
+  local out
+  out=$(fm_busy_rendered_idle_watchdog codex $'tool output\n• Working (6s • esc to interrupt)')
+  [ "$out" = busy ] || fail "a healthy Codex turn did not suppress the rendered-idle watchdog: $out"
+  out=$(fm_busy_rendered_idle_watchdog codex $'completed turn\n› ')
+  [ "$out" = idle ] || fail "a stopped Codex turn did not classify idle for watchdog timing: $out"
+  for harness in claude opencode pi pi-signed grok kimi unknown; do
+    out=$(fm_busy_rendered_idle_watchdog "$harness" 'completed turn')
+    [ "$out" = unsupported ] \
+      || fail "$harness inherited Codex's rendered-idle heuristic: $out"
+  done
+  pass "the rendered-idle watchdog is adapter-scoped and never changes semantic busy state"
+}
+
 test_kimi_unverified_gate() {
   local state gen out
   state=$(new_state_dir kimi-gate)
@@ -468,6 +482,7 @@ test_source_mismatch_cross_adapter
 test_converted_adapters_ignore_footer_text
 test_grok_regex_isolated
 test_codex_unverified_gate
+test_rendered_idle_watchdog_is_harness_scoped
 test_kimi_unverified_gate
 test_dead_endpoint_overrides
 test_agent_dead_overrides_stale_busy_record

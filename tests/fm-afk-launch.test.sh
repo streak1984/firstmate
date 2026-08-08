@@ -679,20 +679,90 @@ unit_lock_requires_complete_metadata() {
   rm -rf "$st"
 }
 
-unit_stop_surfaces_afk_removal_failure() {
-  local st
+unit_stop_afk_removal_failure_arms_live_fallback() {
+  local st out rc
   st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-stop-remove.XXXXXX")
   mkdir -p "$st/state"
   : > "$st/state/.afk"
-  if FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" bash -c '
+  set +e
+  out=$(FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" bash -c '
     . "$1"
     rm() { local last=${!#}; [ "$last" != "$FM_AFK_LAUNCH_STATE/.afk" ]; }
-    ! fm_afk_launch_stop
-  ' _ "$LAUNCH"; then
-    pass "stop state: away-flag removal failure is surfaced"
-  else
-    fail "stop state: away-flag removal failure reported success"
-  fi
+    fm_afk_launch_fallback_start() {
+      : > "$FM_AFK_LAUNCH_STATE/.fallback-live"
+      return 0
+    }
+    fm_afk_launch_verify_active() {
+      [ -e "$FM_AFK_LAUNCH_STATE/.afk" ] && [ -e "$FM_AFK_LAUNCH_STATE/.fallback-live" ]
+    }
+    fm_afk_launch_stop_checked
+  ' _ "$LAUNCH" 2>&1)
+  rc=$?
+  set +e
+  [ "$rc" -ne 0 ] || fail "away-flag removal failure reported a full stop"
+  [ -e "$st/state/.afk" ] || fail "failed shutdown cleared the away flag"
+  [ -e "$st/state/.fallback-live" ] || fail "failed shutdown left no live fallback supervisor"
+  printf '%s\n' "$out" | grep -F 'shutdown failed' >/dev/null \
+    || fail "failed shutdown omitted its authoritative failure verdict: $out"
+  printf '%s\n' "$out" | grep -F 'away mode stopped' >/dev/null \
+    && fail "one shutdown run printed both stopped and failed verdicts: $out"
+  pass "stop state: away-flag removal failure preserves the flag and arms a live fallback"
+  rm -rf "$st"
+}
+
+unit_stop_early_failure_arms_live_fallback() {
+  local st out rc
+  st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-stop-early.XXXXXX")
+  mkdir -p "$st/state"
+  : > "$st/state/.afk"
+  printf 'tmux\tonly-two-fields\n' > "$st/state/.afk-daemon-terminal"
+  set +e
+  out=$(FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" bash -c '
+    . "$1"
+    fm_afk_launch_fallback_start() {
+      : > "$FM_AFK_LAUNCH_STATE/.fallback-live"
+      return 0
+    }
+    fm_afk_launch_verify_active() {
+      [ -e "$FM_AFK_LAUNCH_STATE/.afk" ] && [ -e "$FM_AFK_LAUNCH_STATE/.fallback-live" ]
+    }
+    fm_afk_launch_stop_checked
+  ' _ "$LAUNCH" 2>&1)
+  rc=$?
+  set +e
+  [ "$rc" -ne 0 ] || fail "early shutdown failure reported a full stop"
+  [ -e "$st/state/.afk" ] || fail "early shutdown failure cleared the away flag"
+  [ -e "$st/state/.fallback-live" ] || fail "early shutdown failure bypassed fallback supervision"
+  [ "$(printf '%s\n' "$out" | grep -c 'shutdown failed' || true)" -eq 1 ] \
+    || fail "early shutdown failure did not emit one authoritative verdict: $out"
+  printf '%s\n' "$out" | grep -F 'away mode stopped' >/dev/null \
+    && fail "early shutdown failure also printed a stopped verdict: $out"
+  pass "stop state: every early failure preserves the flag only with live fallback supervision"
+  rm -rf "$st"
+}
+
+unit_stop_terminal_cleanup_failure_is_still_a_full_stop() {
+  local st out rc
+  st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-stop-cleanup.XXXXXX")
+  mkdir -p "$st/state"
+  : > "$st/state/.afk"
+  printf 'tmux\texact-session\towned\n' > "$st/state/.afk-daemon-terminal"
+  set +e
+  out=$(FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" bash -c '
+    . "$1"
+    fm_afk_launch_close_recorded() { return 1; }
+    fm_afk_launch_stop
+  ' _ "$LAUNCH" 2>&1)
+  rc=$?
+  set +e
+  [ "$rc" -eq 0 ] || fail "terminal cleanup failure contradicted a completed daemon/flag shutdown: $out"
+  [ ! -e "$st/state/.afk" ] || fail "completed shutdown retained the away flag"
+  [ -e "$st/state/.afk-daemon-terminal" ] || fail "unconfirmed terminal cleanup lost its exact reconciliation id"
+  [ "$(printf '%s\n' "$out" | grep -c 'away mode stopped' || true)" -eq 1 ] \
+    || fail "completed shutdown did not print exactly one authoritative verdict: $out"
+  printf '%s\n' "$out" | grep -F 'shutdown failed' >/dev/null \
+    && fail "completed shutdown also printed a failure verdict: $out"
+  pass "stop state: terminal cleanup failure cannot contradict a full daemon/flag stop"
   rm -rf "$st"
 }
 
@@ -944,7 +1014,9 @@ unit_stop_malformed_record_fails_closed
 unit_tmux_planned_record_and_collision
 unit_stop_validates_before_signal
 unit_lock_requires_complete_metadata
-unit_stop_surfaces_afk_removal_failure
+unit_stop_afk_removal_failure_arms_live_fallback
+unit_stop_early_failure_arms_live_fallback
+unit_stop_terminal_cleanup_failure_is_still_a_full_stop
 unit_stop_confirms_daemon_exit
 unit_refresh_validates_record
 unit_clear_failure_aborts_entry

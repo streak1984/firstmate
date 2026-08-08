@@ -35,6 +35,8 @@
 #                              id, then clear state/.afk last.
 #   fm-afk-launch.sh reconcile Close a recorded-but-dead daemon terminal by exact
 #                              id and drop the record (recovery after a crash).
+#   fm-afk-launch.sh verify-active
+#                              Succeed only when .afk and a live daemon agree.
 #
 # Supported backends: herdr, tmux. Others (zellij, orca, cmux) have no verified
 # non-visible-launch primitive here yet and refuse loudly.
@@ -72,6 +74,7 @@ if [ -n "${FM_STATE_OVERRIDE:-}" ]; then
 fi
 FM_AFK_LAUNCH_STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 FM_AFK_LAUNCH_RECORD="$FM_AFK_LAUNCH_STATE/.afk-daemon-terminal"
+FM_AFK_LAUNCH_RETIRED_PREFIX="$FM_AFK_LAUNCH_STATE/.afk-daemon-terminal.retired"
 FM_AFK_LAUNCH_LOCK="$FM_AFK_LAUNCH_STATE/.afk-launch.lock"
 FM_AFK_LAUNCH_WS_LABEL="firstmate-afk-daemon"
 
@@ -146,7 +149,7 @@ fm_afk_launch_lock_release() {
 }
 
 fm_afk_launch_usage() {
-  sed -n '2,34p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '2,40p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 # The command run inside the created terminal. Real launch runs the shared
@@ -263,6 +266,19 @@ fm_afk_launch_close_recorded() {
   return 1
 }
 
+fm_afk_launch_reconcile_retired() {
+  local retired result=0
+  for retired in "$FM_AFK_LAUNCH_RETIRED_PREFIX".*; do
+    [ -e "$retired" ] || continue
+    (
+      FM_AFK_LAUNCH_RECORD=$retired
+      fm_afk_launch_record_read || exit $?
+      fm_afk_launch_close_recorded
+    ) || result=1
+  done
+  return "$result"
+}
+
 fm_afk_launch_terminal_alive() {  # <backend> <target>
   local backend=$1 target=$2 session pane
   case "$backend" in
@@ -343,7 +359,7 @@ fm_afk_launch_herdr_recover_created() {  # <session> <label>
 # Reconcile a recorded-but-dead terminal: if a record exists and no live daemon
 # owns it, close the leaked terminal by exact id and drop the record.
 fm_afk_launch_reconcile() {
-  local read_result
+  local read_result result=0
   if daemon_lock_held_by_live_daemon; then
     return 0
   fi
@@ -351,10 +367,12 @@ fm_afk_launch_reconcile() {
   read_result=$?
   if [ "$read_result" -eq 0 ]; then
     fm_afk_launch_log "reconciling leaked daemon terminal ${FM_AFK_REC_BACKEND}:${FM_AFK_REC_TARGET}"
-    fm_afk_launch_close_recorded
+    fm_afk_launch_close_recorded || result=1
   elif [ "$read_result" -eq 2 ]; then
     return 1
   fi
+  fm_afk_launch_reconcile_retired || result=1
+  return "$result"
 }
 
 fm_afk_launch_restore_backup() {  # <backup> <had-afk>
@@ -416,7 +434,7 @@ fm_afk_launch_create_herdr() {  # <captain-target> <captain-backend>
     IFS=$'\t' read -r wsid pane <<< "$recovered"
   fi
   entry=$(fm_afk_launch_entry_cmd)
-  cmd=$(printf 'exec env FM_HOME=%q FM_SUPERVISOR_TARGET=%q FM_SUPERVISOR_BACKEND=%q %q' \
+  cmd=$(printf 'exec env FM_HOME=%q FM_SUPERVISOR_TARGET=%q FM_SUPERVISOR_BACKEND=%q FM_AFK_STATE_PREPARED=1 %q' \
     "$FM_HOME" "$captain_target" "$captain_backend" "$entry")
   if ! fm_afk_launch_record_write herdr "$session:$pane" "$wsid"; then
     fm_afk_launch_log "failed to persist herdr daemon terminal record; closing $session:$pane"
@@ -431,7 +449,11 @@ fm_afk_launch_create_herdr() {  # <captain-target> <captain-backend>
     return 1
   fi
   fm_afk_launch_commit_terminal herdr "$session:$pane" "$wsid" 1 || return 1
-  fm_afk_launch_log "daemon launched in non-visible herdr workspace $wsid (pane $session:$pane), supervising $captain_target"
+  if [ "${FM_AFK_LAUNCH_FALLBACK_MODE:-0}" = 1 ]; then
+    fm_afk_launch_log "fallback supervisor launched in non-visible herdr workspace $wsid (pane $session:$pane)"
+  else
+    fm_afk_launch_log "daemon launched in non-visible herdr workspace $wsid (pane $session:$pane), supervising $captain_target"
+  fi
 }
 
 # Launch the daemon in a detached tmux session (never a split-window in the
@@ -443,7 +465,7 @@ fm_afk_launch_create_tmux() {  # <captain-target> <captain-backend>
   nonce="$$-${RANDOM:-0}-$(date '+%s')"
   session="fm-afk-daemon-$hash-$nonce"
   entry=$(fm_afk_launch_entry_cmd)
-  cmd=$(printf 'exec env FM_HOME=%q FM_SUPERVISOR_TARGET=%q FM_SUPERVISOR_BACKEND=%q %q' \
+  cmd=$(printf 'exec env FM_HOME=%q FM_SUPERVISOR_TARGET=%q FM_SUPERVISOR_BACKEND=%q FM_AFK_STATE_PREPARED=1 %q' \
     "$FM_HOME" "$captain_target" "$captain_backend" "$entry")
   if ! fm_afk_launch_record_write tmux "$session" ""; then
     fm_afk_launch_log "failed to persist planned tmux daemon session '$session'"
@@ -457,7 +479,41 @@ fm_afk_launch_create_tmux() {  # <captain-target> <captain-backend>
     return 1
   fi
   fm_afk_launch_commit_terminal tmux "$session" "" 1 || return 1
-  fm_afk_launch_log "daemon launched in detached tmux session '$session', supervising $captain_target"
+  if [ "${FM_AFK_LAUNCH_FALLBACK_MODE:-0}" = 1 ]; then
+    fm_afk_launch_log "fallback supervisor launched in detached tmux session '$session'"
+  else
+    fm_afk_launch_log "daemon launched in detached tmux session '$session', supervising $captain_target"
+  fi
+}
+
+# A failed flag clear must not leave state/.afk claiming daemon ownership after
+# the original daemon has exited.
+# Retire any unconfirmed old terminal record without losing its exact cleanup
+# identity, then start a fresh daemon in a separately tracked terminal and
+# require its live lock before returning failure with the flag intact.
+fm_afk_launch_fallback_start() {
+  local captain_target captain_backend retired="" result
+  daemon_lock_held_by_live_daemon && return 0
+  captain_target=$(discover_supervisor_target) || return 1
+  captain_backend=$(discover_supervisor_backend) || return 1
+  if [ -e "$FM_AFK_LAUNCH_RECORD" ]; then
+    retired="$FM_AFK_LAUNCH_RETIRED_PREFIX.$(date +%s).$$.${RANDOM:-0}"
+    mv "$FM_AFK_LAUNCH_RECORD" "$retired" || return 1
+  fi
+  FM_AFK_LAUNCH_FALLBACK_MODE=1
+  case "$captain_backend" in
+    herdr) fm_afk_launch_create_herdr "$captain_target" "$captain_backend"; result=$? ;;
+    tmux) fm_afk_launch_create_tmux "$captain_target" "$captain_backend"; result=$? ;;
+    *) result=1 ;;
+  esac
+  FM_AFK_LAUNCH_FALLBACK_MODE=0
+  if [ "$result" -eq 0 ] && daemon_lock_held_by_live_daemon; then
+    return 0
+  fi
+  if [ -n "$retired" ] && [ -e "$retired" ] && [ ! -e "$FM_AFK_LAUNCH_RECORD" ]; then
+    mv "$retired" "$FM_AFK_LAUNCH_RECORD" 2>/dev/null || true
+  fi
+  return 1
 }
 
 fm_afk_launch_start() {
@@ -573,7 +629,7 @@ fm_afk_launch_start_native() {
 }
 
 fm_afk_launch_stop() {
-  local pid pid_identity current_identity result=0 read_result
+  local pid pid_identity current_identity cleanup_ok=1 read_result
   fm_afk_launch_record_read
   read_result=$?
   if [ "$read_result" -eq 2 ]; then
@@ -592,7 +648,6 @@ fm_afk_launch_stop() {
   if [ -n "$pid" ]; then
     if ! kill -TERM "$pid" 2>/dev/null; then
       fm_afk_launch_log "failed to signal away-mode daemon pid=$pid"
-      result=1
     fi
     for _ in $(seq 1 40); do
       fm_pid_alive "$pid" || break
@@ -601,29 +656,77 @@ fm_afk_launch_stop() {
   fi
   if [ -n "$pid" ] && fm_pid_alive "$pid"; then
     current_identity=$(fm_pid_identity "$pid" 2>/dev/null) || {
-      fm_afk_launch_log "could not confirm away-mode daemon exit; preserving lifecycle state"
+      fm_afk_launch_log "daemon exit could not be confirmed"
       return 1
     }
     if [ "$current_identity" = "$pid_identity" ]; then
-      fm_afk_launch_log "away-mode daemon did not exit after SIGTERM; preserving lifecycle state"
+      fm_afk_launch_log "the original supervisor is still live after its shutdown signal"
       return 1
     fi
   fi
   # (2) Close the daemon's own terminal by exact id.
   if [ "$read_result" -eq 0 ]; then
-    fm_afk_launch_close_recorded || result=1
+    fm_afk_launch_close_recorded || cleanup_ok=0
   fi
-  # (3) Clear the away-mode flag LAST.
-  if ! rm -f "$FM_AFK_LAUNCH_STATE/.afk"; then
-    fm_afk_launch_log "failed to clear away-mode flag"
-    result=1
+  fm_afk_launch_reconcile_retired || cleanup_ok=0
+  # (3) Clear the away-mode flag LAST, after the original daemon is confirmed
+  # gone.
+  # Terminal cleanup is separately recoverable and cannot contradict a complete
+  # daemon/flag shutdown.
+  if rm -f "$FM_AFK_LAUNCH_STATE/.afk"; then
+    if [ "$cleanup_ok" -eq 1 ]; then
+      fm_afk_launch_log "away mode stopped; daemon gone, terminal torn down, and .afk cleared"
+    else
+      fm_afk_launch_log "away mode stopped; daemon gone and .afk cleared; exact terminal cleanup remains recorded"
+    fi
+    return 0
   fi
-  if [ "$result" -eq 0 ]; then
-    fm_afk_launch_log "away mode stopped; daemon terminal torn down and .afk cleared"
-  else
-    fm_afk_launch_log "away mode stopped; terminal teardown remains recorded for retry"
+  fm_afk_launch_log "away-mode flag clear failed; arming fallback supervision"
+  return 1
+}
+
+# Resolve every nonzero stop path against the same atomic ownership invariant.
+# A caller receives success only with the flag clear and no verified daemon, or
+# failure only with the flag present and a verified live supervisor.
+fm_afk_launch_stop_checked() {
+  local result recovery_flag
+  fm_afk_launch_stop
+  result=$?
+  [ "$result" -ne 0 ] || return 0
+  if fm_afk_launch_verify_active; then
+    fm_afk_launch_log "shutdown failed; .afk retained and a live supervisor is armed"
+    return 1
   fi
-  return "$result"
+  if [ ! -e "$FM_AFK_LAUNCH_STATE/.afk" ]; then
+    if daemon_lock_held_by_live_daemon && fm_afk_launch_flag_write && fm_afk_launch_verify_active; then
+      fm_afk_launch_log "shutdown failed; .afk restored and a live supervisor is armed"
+      return 1
+    fi
+    fm_afk_launch_log "away mode stopped; no live daemon and .afk is clear; exact terminal cleanup remains recorded"
+    return 0
+  fi
+  if fm_afk_launch_fallback_start && fm_afk_launch_verify_active; then
+    fm_afk_launch_log "shutdown failed; .afk retained and a live fallback supervisor is armed"
+    return 1
+  fi
+  # If fallback startup itself is unavailable, atomically retire the ownership
+  # flag so guards cannot claim away supervision exists when it does not.
+  # The recovery marker preserves the failed flag write as diagnostic evidence.
+  recovery_flag="$FM_AFK_LAUNCH_STATE/.afk-clear-recovery.$(date +%s).$$"
+  if mv "$FM_AFK_LAUNCH_STATE/.afk" "$recovery_flag"; then
+    fm_afk_launch_log "away mode stopped; daemon gone and .afk cleared by recovery rename after fallback startup failed"
+    return 0
+  fi
+  fm_afk_launch_log "shutdown cannot return blind; retrying fallback supervision until a live daemon is verified"
+  while ! fm_afk_launch_fallback_start || ! fm_afk_launch_verify_active; do
+    sleep 1
+  done
+  fm_afk_launch_log "shutdown failed; .afk retained and a live fallback supervisor is armed"
+  return 1
+}
+
+fm_afk_launch_verify_active() {
+  [ -e "$FM_AFK_LAUNCH_STATE/.afk" ] && daemon_lock_held_by_live_daemon
 }
 
 fm_afk_launch_main() {
@@ -640,8 +743,9 @@ fm_afk_launch_main() {
   case "${1:-start}" in
     start) fm_afk_launch_start ;;
     start-native) fm_afk_launch_start_native ;;
-    stop) fm_afk_launch_stop ;;
+    stop) fm_afk_launch_stop_checked ;;
     reconcile) fm_afk_launch_reconcile ;;
+    verify-active) fm_afk_launch_verify_active ;;
     -h|--help|help) fm_afk_launch_usage ;;
     *) fm_afk_launch_usage >&2; return 2 ;;
   esac

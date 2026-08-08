@@ -83,6 +83,10 @@
 # another adapter. The delivery guards in bin/fm-tmux-lib.sh match rendered
 # footers for submit acknowledgement and away-mode supervisor injection only;
 # neither is a recorded worker state source.
+# The separate fm_busy_rendered_idle_watchdog helper is not current-state
+# classification.
+# It is a harness-scoped stale-detection input for adapters whose semantic busy
+# gate is still closed, and it never changes fm_busy_classify's unknown verdict.
 #
 # Second consumer of the same capability gate: bin/fm-spawn.sh's
 # spawn_confirm_launch also calls fm_busy_native_busy_capable, but for a
@@ -310,6 +314,27 @@ fm_busy_record_read() {  # <state-dir> <id>
 fm_busy_grok_tail_busy() {
   grep -v '^[[:space:]]*$' | tail -12 \
     | grep -qiE "${FM_BUSY_REGEX:-${FM_TMUX_GROK_BUSY_REGEX_DEFAULT:-Ctrl\\+c:cancel}}"
+}
+
+# fm_busy_rendered_idle_watchdog: a supervision-only adapter table for a
+# verified rendered running token when no semantic busy source exists yet.
+# Prints busy when the token is present in the bounded pane tail, idle when a
+# readable tail positively lacks it, and unsupported for every adapter without
+# a verified token.
+# Callers must treat capture failure separately and must never promote this
+# result into fm_busy_classify or fm-crew-state current-state truth.
+fm_busy_rendered_idle_watchdog() {  # <harness> <tail40>
+  local harness=$1 tail40=${2-}
+  case "$harness" in
+    codex*)
+      if printf '%s\n' "$tail40" | tail -12 | grep -Fq 'esc to interrupt'; then
+        printf 'busy'
+      else
+        printf 'idle'
+      fi
+      ;;
+    *) printf 'unsupported' ;;
+  esac
 }
 
 # fm_busy_classify: semantic classification for a task whose endpoint the

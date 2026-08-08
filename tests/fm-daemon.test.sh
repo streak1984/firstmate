@@ -337,8 +337,8 @@ test_handle_wake_terminal_signal_clears_pause_tracking() {
   [ ! -e "$state/.stale-$watcher_key" ] || fail "terminal signal retained watcher stale tracking"
   [ ! -e "$state/.wedge-escalations-$watcher_key" ] || fail "terminal signal retained watcher wedge tracking"
   FM_STATE_OVERRIDE="$state" handle_wake "stale: $win" "$state"
-  [ ! -e "$state/.subsuper-stale-$key" ] || fail "terminal stale dedupe restored daemon stale tracking"
-  pass "a terminal signal clears pause and stale tracking across both supervisors"
+  [ -e "$state/.subsuper-stale-$key" ] || fail "terminal stale dedupe suppressed new observed-idle tracking"
+  pass "a terminal signal clears prior tracking while later observed idleness starts a fresh wedge timer"
 }
 
 test_housekeeping_migrates_watcher_pause_marker() {
@@ -1092,7 +1092,8 @@ test_classify_signal_dedup_against_scan() {
 
 test_classify_stale_dedup_against_signal() {
   # If the signal path already escalated a status (seen marker matches),
-  # classify_stale must self-handle to avoid a duplicate in the digest.
+  # classify_stale must suppress the duplicate status text while preserving
+  # observed-idle aging for the still-open task.
   local dir state key out
   dir=$(make_supercase stale-dedup)
   state="$dir/state"
@@ -1100,12 +1101,41 @@ test_classify_stale_dedup_against_signal() {
   key=$(printf '%s' "dup-s10" | tr ':/.' '___')
   printf 'done: PR https://x/y/pull/10' > "$state/.subsuper-seen-status-$key"
   out=$(FM_STATE_OVERRIDE="$state" classify_stale "sess:fm-dup-s10" "$state")
-  case "$out" in self\|*) ;; *) fail "stale not deduped against signal: $out" ;; esac
+  case "$out" in idle\|*) ;; *) fail "seen terminal stale did not preserve idle aging: $out" ;; esac
   # Without the seen marker, it should escalate.
   rm -f "$state/.subsuper-seen-status-$key"
   out=$(FM_STATE_OVERRIDE="$state" classify_stale "sess:fm-dup-s10" "$state")
   case "$out" in escalate\|*) ;; *) fail "stale should escalate when not seen: $out" ;; esac
-  pass "classify_stale dedupes against the signal path seen marker"
+  pass "classify_stale dedupes status text without suppressing observed idle aging"
+}
+
+test_seen_terminal_stale_realerts_for_observed_idleness() {
+  local dir state fakebin task win key pane
+  dir=$(make_supercase seen-terminal-idle)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  task=seen-done-w11
+  win="sess:fm-$task"
+  key=$(printf '%s' "$task" | tr ':/.' '___')
+  pane="$dir/pane.txt"
+  fm_write_meta "$state/$task.meta" "window=$win" "backend=tmux" "harness=codex"
+  printf 'done: prior increment was already surfaced\n' > "$state/$task.status"
+  printf 'done: prior increment was already surfaced' > "$state/.subsuper-seen-status-$key"
+  printf 'idle codex composer\n' > "$pane"
+
+  FM_STATE_OVERRIDE="$state" handle_wake "stale: $win" "$state"
+  [ -e "$state/.subsuper-stale-$key" ] \
+    || fail "an already-seen terminal status suppressed the task's observed idle marker"
+  [ ! -s "$state/.subsuper-escalations" ] \
+    || fail "status dedupe repeated the terminal text before the idle bound"
+
+  echo $(( $(date +%s) - 500 )) > "$state/.subsuper-stale-$key"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$win" FM_FAKE_TMUX_CAPTURE="$pane" \
+    FM_STATE_OVERRIDE="$state" FM_STALE_ESCALATE_SECS=240 \
+    FM_ESCALATE_BATCH_SECS=999999 housekeeping "$state"
+  grep -F "stale persisted" "$state/.subsuper-escalations" >/dev/null \
+    || fail "already-seen terminal status prevented the aged idle task from re-alerting"
+  pass "already-seen terminal status plus an idle open pane re-alerts at the idle bound"
 }
 
 # AFK incident regression: a nonterminal working: line that was already surfaced
@@ -1991,6 +2021,7 @@ test_tmux_composer_state_requires_matching_box_borders
 test_pane_input_pending_honors_idle_override_after_border_strip
 test_classify_signal_dedup_against_scan
 test_classify_stale_dedup_against_signal
+test_seen_terminal_stale_realerts_for_observed_idleness
 test_afk_nonterminal_working_merged_keeps_wedge_aging
 test_afk_genuine_done_still_terminal_stale
 test_pane_input_pending_bordered_idle_not_pending

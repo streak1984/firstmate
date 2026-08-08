@@ -167,6 +167,11 @@ BUSY_TURN_MAX_SECS=${FM_BUSY_TURN_MAX_SECS:-1200}
 # design: a never-started worker produces nothing, so it must surface within
 # minutes, not hours.
 NEVER_STARTED_SECS=${FM_NEVER_STARTED_SECS:-120}
+# Some adapters whose semantic busy source is still unverified expose a stable
+# rendered token only while a turn is running.
+# Their adapter-scoped watchdog times continuous observed absence instead of
+# relying on pane hashes, which may repaint while the worker is stopped.
+RENDERED_IDLE_WATCHDOG_SECS=${FM_RENDERED_IDLE_WATCHDOG_SECS:-180}
 # A crew that declared a pause is idling on a known external wait, so its stale
 # pane is absorbed rather than wedge-escalated.
 # A captain-held or paused crew whose agent has confidently exited uses the same
@@ -371,6 +376,37 @@ wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-
       fi
       ;;
   esac
+}
+
+rendered_idle_watchdog_clear() {  # <window-key>
+  local key=$1
+  rm -f "$STATE/.idle-watchdog-since-$key" \
+    "$STATE/.idle-watchdog-escalations-$key"
+}
+
+rendered_idle_watchdog_tick() {  # <window> <window-key>
+  local win=$1 key=$2 since_file escalation_file since age n reason
+  since_file="$STATE/.idle-watchdog-since-$key"
+  escalation_file="$STATE/.idle-watchdog-escalations-$key"
+  since=$(cat "$since_file" 2>/dev/null || true)
+  case "$since" in
+    ''|*[!0-9]*)
+      date +%s > "$since_file"
+      triage_log "rendered-idle watchdog started: $win"
+      return 0
+      ;;
+  esac
+  age=$(( $(date +%s) - since ))
+  [ "$age" -ge "$RENDERED_IDLE_WATCHDOG_SECS" ] || return 0
+  n=$(( $(cat "$escalation_file" 2>/dev/null || echo 0) + 1 ))
+  echo "$n" > "$escalation_file"
+  date +%s > "$since_file"
+  reason="stale: $win (idle ${age}s, possible wedge, escalation $n, rendered-idle watchdog)"
+  if [ "$n" -ge "$FM_WEDGE_DEMAND_INSPECT_COUNT" ]; then
+    reason="$reason, demand-deep-inspection: rendered-idle watchdog escalated $n times without a verified busy turn"
+  fi
+  fm_wake_append stale "$win" "$reason" || exit 1
+  wake "$reason"
 }
 
 # busy_turn_anchor_age: age of <task>'s completed-turn anchor - the per-task
@@ -1032,6 +1068,7 @@ EOF
       continue
     fi
     tail40=$(fm_backend_capture "$(window_backend "$w")" "$w" 40 "$(window_label "$w")" 2>/dev/null) || {
+      rendered_idle_watchdog_clear "$key"
       handle_unreadable_capture "$w" "$key"
       continue
     }
@@ -1044,13 +1081,36 @@ EOF
     ewf="$STATE/.wedge-escalations-$key"
     pf="$STATE/.paused-$key"   # flag: this key's stale is using the bounded pause cadence
     prev=$(cat "$hf" 2>/dev/null || true)
+    idle_watchdog_state=$(fm_busy_rendered_idle_watchdog "$(window_harness "$w")" "$tail40")
+    case "$idle_watchdog_state" in
+      busy)
+        rendered_idle_watchdog_clear "$key"
+        ;;
+      idle)
+        # This adapter's independent continuous-idle timer owns stale detection.
+        # Clear hash-bound wedge state so pane repainting cannot reset or race it.
+        rm -f "$sf" "$ssf" "$ewf"
+        if status_is_paused_or_captain_held "$last"; then
+          rendered_idle_watchdog_clear "$key"
+        else
+          rendered_idle_watchdog_tick "$w" "$key"
+        fi
+        continue
+        ;;
+      *) rendered_idle_watchdog_clear "$key" ;;
+    esac
     # Busy verdict: the semantic busy-state contract (bin/fm-busy-lib.sh), read
     # once per window per poll and reused below so a busy verdict is consistent
     # within one cycle. The source token rides along so the progress alarms can
     # tell a spawn-seed busy (never started) from a real harness turn.
     busy_class=$(window_busy_class "$w" "$tail40")
-    if [ "${busy_class%% *}" = busy ]; then busy_now=0; else busy_now=1; fi
+    if [ "${busy_class%% *}" = busy ] || [ "$idle_watchdog_state" = busy ]; then
+      busy_now=0
+    else
+      busy_now=1
+    fi
     busy_source=${busy_class#* }
+    [ "$idle_watchdog_state" != busy ] || busy_source=rendered-idle-watchdog
     if [ "$h" = "$prev" ]; then
       n=$(( $(cat "$cf" 2>/dev/null || echo 0) + 1 ))
       echo "$n" > "$cf"

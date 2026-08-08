@@ -1725,6 +1725,95 @@ test_nonterminal_stale_repairs_missing_or_corrupt_timer() {
   pass "matching non-terminal stale suppressors repair missing or corrupt stale-since timers"
 }
 
+# Harnesses with no verified semantic busy source can still expose a verified
+# rendered turn-running token for supervision only.
+# Codex's token is absent after its turn ends, so the watcher owns a continuous
+# observed-idle timer that is independent of pane hash churn.
+test_rendered_idle_watchdog_escalates_stopped_codex() {
+  local dir state fakebin out capture_file statusf window key sig pid
+  dir=$(make_case rendered-idle-codex); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"; window="test:fm-codex-idle"
+  printf 'completed codex turn\n› ' > "$capture_file"
+  printf 'window=%s\nkind=ship\nharness=codex\n' "$window" > "$state/codex-idle.meta"
+  statusf="$state/codex-idle.status"
+  printf 'done: prior increment already surfaced\n' > "$statusf"
+  sig=$(seen_sig "$statusf"); printf '%s' "$sig" > "$state/.seen-codex-idle_status"
+  key=$(printf '%s' "$window" | tr '.:/' '___')
+  echo $(( $(date +%s) - 500 )) > "$state/.idle-watchdog-since-$key"
+
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_RENDERED_IDLE_WATCHDOG_SECS=180 FM_POLL=0.2 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 40 || fail "stopped Codex worker did not trip the rendered-idle watchdog"
+  grep -F "stale: $window" "$out" >/dev/null || fail "Codex watchdog did not emit a stale wake: $(cat "$out")"
+  grep -F "rendered-idle watchdog" "$out" >/dev/null || fail "Codex watchdog wake omitted its source: $(cat "$out")"
+  grep -F "possible wedge" "$out" >/dev/null || fail "Codex watchdog wake did not identify a possible wedge"
+  pass "a stopped Codex worker escalates from continuous observed idleness"
+}
+
+test_rendered_idle_watchdog_ignores_busy_and_paused_codex() {
+  local dir state fakebin out capture_file statusf window key sig pid
+  dir=$(make_case rendered-idle-safe); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"; window="test:fm-codex-safe"
+  printf 'tool output\n• Working (6s • esc to interrupt)\n' > "$capture_file"
+  printf 'window=%s\nkind=ship\nharness=codex\n' "$window" > "$state/codex-safe.meta"
+  key=$(printf '%s' "$window" | tr '.:/' '___')
+  echo $(( $(date +%s) - 500 )) > "$state/.idle-watchdog-since-$key"
+
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_RENDERED_IDLE_WATCHDOG_SECS=1 FM_POLL=0.2 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  if ! wait_live "$pid" 20; then
+    reap "$pid"; fail "healthy busy Codex worker tripped the rendered-idle watchdog: $(cat "$out")"
+  fi
+  [ ! -e "$state/.idle-watchdog-since-$key" ] \
+    || { reap "$pid"; fail "healthy Codex busy token did not clear prior idle aging"; }
+  reap "$pid"
+
+  : > "$out"
+  printf 'completed codex turn\n› ' > "$capture_file"
+  statusf="$state/codex-safe.status"
+  printf 'paused: awaiting the declared upstream release\n' > "$statusf"
+  sig=$(seen_sig "$statusf"); printf '%s' "$sig" > "$state/.seen-codex-safe_status"
+  echo $(( $(date +%s) - 500 )) > "$state/.idle-watchdog-since-$key"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_RENDERED_IDLE_WATCHDOG_SECS=1 FM_POLL=0.2 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  if ! wait_live "$pid" 20; then
+    reap "$pid"; fail "declared paused Codex worker tripped the rendered-idle watchdog: $(cat "$out")"
+  fi
+  [ ! -e "$state/.idle-watchdog-since-$key" ] \
+    || { reap "$pid"; fail "declared pause retained Codex idle-watchdog aging"; }
+  reap "$pid"
+  pass "healthy busy and declared paused Codex workers stay quiet"
+}
+
+test_rendered_idle_watchdog_degrades_quietly_when_unreadable() {
+  local dir state fakebin out window key pid
+  dir=$(make_unreadable_case rendered-idle-unreadable)
+  state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"
+  window="test:fm-codex-unreadable"
+  printf 'window=%s\nkind=ship\nharness=codex\n' "$window" > "$state/codex-unreadable.meta"
+  key=$(printf '%s' "$window" | tr '.:/' '___')
+  echo $(( $(date +%s) - 500 )) > "$state/.idle-watchdog-since-$key"
+
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE_FAIL=1 \
+    FM_FAKE_TMUX_TARGET_EXISTS=1 FM_STATE_OVERRIDE="$state" \
+    FM_RENDERED_IDLE_WATCHDOG_SECS=1 FM_POLL=0.2 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  if ! wait_live "$pid" 20; then
+    reap "$pid"; fail "transiently unreadable Codex pane produced a watchdog wake: $(cat "$out")"
+  fi
+  [ ! -e "$state/.idle-watchdog-since-$key" ] \
+    || { reap "$pid"; fail "unreadable pane kept unobserved idle time in the watchdog"; }
+  reap "$pid"
+  pass "the rendered-idle watchdog resets quietly when the pane is unreadable"
+}
+
 # --- triage debug log stays size capped -------------------------------------
 
 test_triage_log_size_cap_accepts_spaced_wc_counts() {
@@ -1942,6 +2031,9 @@ test_nonterminal_stale_pause_transitions_reclassify_unchanged_hash
 test_nonterminal_paused_rechecks_authoritative_state
 test_paused_authoritative_working_preserves_wedge_timer
 test_nonterminal_stale_repairs_missing_or_corrupt_timer
+test_rendered_idle_watchdog_escalates_stopped_codex
+test_rendered_idle_watchdog_ignores_busy_and_paused_codex
+test_rendered_idle_watchdog_degrades_quietly_when_unreadable
 test_triage_log_size_cap_accepts_spaced_wc_counts
 test_heartbeat_no_change_absorbed
 test_heartbeat_backstop_surfaces_unsurfaced_status

@@ -395,11 +395,12 @@ classify_stale() {  # <window> <state>
           ;;
       esac
     fi
-    # Dedupe against the signal path: if this status was already escalated
-    # (seen marker matches), self-handle to avoid a duplicate in the digest.
+    # Dedupe only the repeated status text.
+    # A still-open task whose pane is observed idle must keep aging toward a
+    # separate wedge escalation even when this terminal line was already seen.
     seen="$state/.subsuper-seen-status-$(_stale_key "$task")"
     if [ "$(cat "$seen" 2>/dev/null || true)" = "$last" ]; then
-      printf 'self|stale + terminal (already escalated by signal): %s' "$last"
+      printf 'idle|stale + terminal status text already escalated; tracking observed idleness: %s' "$last"
       return
     fi
     printf 'escalate|stale + terminal status: %s' "$last"
@@ -1258,6 +1259,16 @@ handle_wake() {  # <reason> <state>
         pause_marker_record "$arg" "$state"
       fi
       log "self-handle (paused): $reason -> $distilled"
+      ;;
+    idle)
+      # Seen-status dedupe suppresses only the duplicate terminal text.
+      # The open task's observed idle pane still gets its own persistence marker
+      # so housekeeping can alert when nobody resumes it by the wedge bound.
+      if [ "$kind" = "stale" ]; then
+        pause_marker_remove "$arg" "$state"
+        stale_marker_record "$arg" "$state"
+      fi
+      log "self-handle (idle aging): $reason -> $distilled"
       ;;
     *)
       # Transient (non-terminal) stale: record/refresh the wedge marker so
