@@ -1533,6 +1533,47 @@ spawn_parked_prompt_visible() {  # <plain-pane-capture>
   return 1
 }
 
+# spawn_confirm_registration_settled_verdict: fm_busy_classify_live wrapped
+# with a short bounded retry that fires ONLY for the capability-gated
+# agent-registry dead verdict ("dead agent-gone", fm_busy_agent_proof_capable;
+# herdr today). Herdr launches an agent process and only records it in its
+# own agent registry a beat later - an observed ~1s gap
+# (data/fm-herdr-080-verify-w6/report.md "spawn-confirm vs agent-registration
+# race"). Reading the registry inside that gap sees no agent yet and answers
+# dead, which would wrongly refuse a worker that is genuinely starting.
+# Scoped to THIS fresh-launch call site: a fresh launch is the only place the
+# registration gap exists. It is deliberately NOT ported into
+# fm_busy_classify's mainline dead detection, which mid-session recovery and
+# supervision rely on to flip an already-running worker's stale endpoint to
+# dead promptly - there is no registration gap once a worker is already up,
+# so that path must keep answering dead immediately (task fm-busy-liveness-w4
+# owns that mainline behavior; do not touch it here).
+# A genuinely dead target - no agent ever registers, e.g. an exited-harness
+# husk pane (data/fm-herdr-friction-s1/report.md F1/W1) - still reads dead
+# once the bounded window elapses: this narrows WHEN a dead verdict is
+# trusted during launch, it never suppresses the refusal itself. A backend
+# without a provable agent registry never produces "dead agent-gone" in the
+# first place (fm_busy_classify gates that source on
+# fm_busy_agent_proof_capable), so this is automatically a no-op there; the
+# explicit capability check below is belt-and-suspenders documentation of
+# that same gate, not a second source of truth.
+spawn_confirm_registration_settled_verdict() {  # <backend> <target> <harness> <id> <state-dir>
+  local backend=$1 target=$2 harness=$3 id=$4 state=$5
+  local verdict interval polls i=1
+  verdict=$(fm_busy_classify_live "$backend" "$target" "$harness" "$id" "$state")
+  if [ "$verdict" = "dead agent-gone" ] && fm_busy_agent_proof_capable "$backend"; then
+    interval=${FM_SPAWN_CONFIRM_DEAD_SETTLE_POLL_INTERVAL:-0.25}
+    polls=$(awk -v t="${FM_SPAWN_CONFIRM_DEAD_SETTLE_TIMEOUT:-1.5}" -v i="$interval" \
+      'BEGIN { if (i <= 0) i = 0.25; n = int(t / i); if (n < 1) n = 1; print n }')
+    while [ "$i" -le "$polls" ] && [ "$verdict" = "dead agent-gone" ]; do
+      sleep "$interval"
+      verdict=$(fm_busy_classify_live "$backend" "$target" "$harness" "$id" "$state")
+      i=$((i + 1))
+    done
+  fi
+  printf '%s' "$verdict"
+}
+
 # The post-launch confirmation poll (ship/scout only; the header owns the
 # contract). Prints the one-line outcome "<state> <detail>" and returns 1 only
 # on failed. The busy owner is the single source for semantic worker state: a
@@ -1569,7 +1610,7 @@ spawn_confirm_launch() {  # -> "<state> <detail>" on stdout; 1 only on failed
   esac
   max=$(awk -v t="$timeout" -v i="$interval" 'BEGIN { if (i <= 0) i = 0.5; n = int(t / i); if (n < 1) n = 1; print n }')
   while [ "$i" -lt "$max" ]; do
-    verdict=$(fm_busy_classify_live "$BACKEND" "$T" "$HARNESS" "$ID" "$STATE")
+    verdict=$(spawn_confirm_registration_settled_verdict "$BACKEND" "$T" "$HARNESS" "$ID" "$STATE")
     v=${verdict%% *}
     case "$v" in
       dead)
