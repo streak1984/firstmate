@@ -34,6 +34,11 @@
 #   local-only   implement on branch, stop and report "ready in branch" (no push/PR);
 #                captain approves, firstmate merges to local main
 # Ship briefs begin with a worktree-isolation assertion before the branch step.
+# Ship and scout scaffolds share one isolation contract (ISOLATION_ONGOING,
+# ISOLATION_SELFCHECK): an ongoing prohibition on writing outside the worktree,
+# reinforced against mid-task drift (e.g. a step that spawns agents or drives
+# herdr-lab moving the process's working directory), plus a pre-done self-check
+# that the primary checkout was never touched.
 # Scout tasks ignore mode - their deliverable is a report, not a merge.
 # Every scaffold's status protocol distinguishes the configured
 # declared-external-wait verb (FM_CLASSIFY_PAUSED_VERB, default "paused") from
@@ -261,6 +266,27 @@ For every factual claim added to user-facing marketing or product content - incl
 EOF
 EVIDENCE_SECTION=${EVIDENCE_SECTION%$'\n'}
 
+# Reinforces the launch-time isolation assertion against mid-task drift: a
+# worker can pass the launch check and still later cd into the primary
+# checkout (observed 2026-08-08, task fm-herdr-080-verify-w6). Shared by the
+# ship and scout scaffolds so the contract has one source of truth.
+IFS= read -r -d '' ISOLATION_ONGOING <<EOF || true
+This is an absolute, ongoing rule, not a one-time launch check: your only writable location is this worktree, for the entire task.
+Never \`cd\` into or edit anything under the primary checkout firstmate operates from, at any point in the task.
+To reference $REPO's canonical code, read it from your own worktree - it holds identical files - never by \`cd\`-ing away.
+Some task steps move your process's working directory without your instruction, such as a test or tool that spawns other agents, runs \`fm-spawn\`, or drives a Herdr lab session.
+After any such step, re-run \`pwd -P\` and confirm you are still in this worktree before you edit or commit anything.
+EOF
+ISOLATION_ONGOING=${ISOLATION_ONGOING%$'\n'}
+
+IFS= read -r -d '' ISOLATION_SELFCHECK <<'EOF' || true
+# Pre-completion isolation self-check
+Before you report ready or done, confirm the primary checkout firstmate operates from is still untouched by you: run `git status --short` there, not in this worktree.
+Require it prints nothing you changed.
+If it shows a change you made, append `blocked: edited the primary checkout` and stop instead of reporting ready or done.
+EOF
+ISOLATION_SELFCHECK=${ISOLATION_SELFCHECK%$'\n'}
+
 if [ "$KIND" = scout ]; then
 cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
@@ -278,9 +304,11 @@ This is a SCOUT task: the deliverable is a written report, not a PR.
 The worktree is your laboratory - install, run, edit, and make scratch commits freely; all of it is discarded at teardown.
 The report is the only thing that survives, so anything worth keeping must be in it.
 
+$ISOLATION_ONGOING
+
 # Rules
 1. Never push to any remote and never open a PR.
-2. Stay inside this worktree; the only files you may write outside it are the report, the status file below, and screenshots staged under \`/tmp/fm-$ID/\` as required above.
+2. Stay inside this worktree at every point in the task, not just at launch; never \`cd\` into or edit anything under the primary checkout firstmate operates from. The only files you may write outside it are the report, the status file below, and screenshots staged under \`/tmp/fm-$ID/\` as required above.
 3. Use gh-axi for GitHub operations and chrome-devtools-axi for browser operations.
 4. Report status by appending one line:
    \`echo "{state}: {one short line}" >> $STATUS_FILE\`
@@ -299,6 +327,8 @@ The report is the only thing that survives, so anything worth keeping must be in
 7. Never stop, restart, or update the shared \`no-mistakes\` daemon - it is one instance serving
    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
    daemon error, append \`blocked: {the daemon error}\` and stop; only firstmate manages the daemon.
+
+$ISOLATION_SELFCHECK
 
 # Definition of done
 Write your findings to \`$DATA/$ID/report.md\`.
@@ -390,11 +420,13 @@ You are in a disposable git worktree of $REPO, at a detached HEAD on a clean def
 The path check is authoritative: \`git rev-parse --git-dir\` and \`git rev-parse --git-common-dir\` can help inspect the repo, but they do not prove you are outside the primary checkout.
 If the top-level path is the primary checkout or not the worktree you were launched in, STOP - do not branch or commit here - append \`blocked: launched in primary checkout, not an isolated worktree\` to the status file and stop.
 
+$ISOLATION_ONGOING
+
 1. First action: create your branch: \`git checkout -b fm/$ID\`$SETUP2
 
 # Rules
 $RULE1
-2. Stay inside this worktree; modify nothing outside it except screenshots staged under \`/tmp/fm-$ID/\` as required above.
+2. Stay inside this worktree at every point in the task, not just at launch; never \`cd\` into or edit anything under the primary checkout firstmate operates from. Modify nothing outside this worktree except screenshots staged under \`/tmp/fm-$ID/\` as required above.
 3. Use gh-axi for GitHub operations and chrome-devtools-axi for browser operations.
 4. Report status by appending one line:
    \`echo "{state}: {one short line}" >> $STATUS_FILE\`
@@ -424,6 +456,8 @@ Record only project knowledge useful to almost every future session.
 For anything the codebase already shows, prefer a pointer to the authoritative file, command, or doc over copying the detail.
 If you touch a project \`AGENTS.md\` that lacks \`## Maintaining this file\`, add that short self-governance section from \`$FM_ROOT/bin/fm-ensure-agents-md.sh\` in the same pass.
 Keep it proportionate: skip \`AGENTS.md\` edits for trivial tasks that produced no durable project knowledge.
+
+$ISOLATION_SELFCHECK
 
 $DOD
 EOF

@@ -346,6 +346,63 @@ test_ship_and_scout_inherit_evidence_integrity_rules() {
   pass "fm-brief.sh: every ship and scout inherits screenshot postconditions and sourced-claim rules"
 }
 
+test_ship_and_scout_harden_isolation_against_mid_task_drift() {
+  local home kind id brief
+  home="$TMP_ROOT/isolation-hardening-home"
+  mkdir -p "$home/data"
+  for kind in ship scout; do
+    id="brief-isolation-$kind"
+    if [ "$kind" = scout ]; then
+      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" sample --scout >/dev/null 2>&1
+    else
+      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" sample >/dev/null 2>&1
+    fi
+    brief="$home/data/$id/brief.md"
+
+    # The prohibition on writing outside the worktree must be stated as
+    # standing for the whole task, not only as a one-time launch check.
+    assert_grep "ongoing rule, not a one-time launch check" "$brief" \
+      "$kind brief does not state the primary-checkout prohibition as ongoing"
+    assert_grep "your only writable location is this worktree, for the entire task" "$brief" \
+      "$kind brief does not scope the writable-location rule to the whole task"
+    # shellcheck disable=SC2016 # Literal backtick is deliberate: asserting on brief prose.
+    assert_grep 'Never `cd` into or edit anything under the primary checkout' "$brief" \
+      "$kind brief does not forbid cd-ing into the primary checkout mid-task"
+
+    # The concrete hazard (agent-spawning steps moving the cwd) must be named,
+    # with an instruction to re-verify location afterward.
+    assert_grep "move your process's working directory without your instruction" "$brief" \
+      "$kind brief does not name the mid-task working-directory hazard"
+    assert_grep "spawns other agents" "$brief" \
+      "$kind brief does not call out agent-spawning steps as a drift hazard"
+    assert_grep "fm-spawn" "$brief" \
+      "$kind brief does not call out fm-spawn as a drift hazard"
+    assert_grep "Herdr lab session" "$brief" \
+      "$kind brief does not call out herdr-lab as a drift hazard"
+    # shellcheck disable=SC2016 # Literal backtick is deliberate: asserting on brief prose.
+    assert_grep 're-run `pwd -P` and confirm you are still in this worktree' "$brief" \
+      "$kind brief does not require re-verifying location after a drift hazard"
+
+    # Rule 2 must carry the same ongoing reinforcement, not just the Setup section.
+    assert_grep "Stay inside this worktree at every point in the task, not just at launch" "$brief" \
+      "$kind brief's Rule 2 was not reinforced against mid-task drift"
+
+    # A pre-completion self-check must require confirming the primary checkout
+    # is untouched before reporting ready/done, and define a blocked outcome.
+    assert_grep "# Pre-completion isolation self-check" "$brief" \
+      "$kind brief is missing the pre-completion isolation self-check section"
+    assert_grep "Before you report ready or done" "$brief" \
+      "$kind brief's self-check does not gate reporting ready/done"
+    # shellcheck disable=SC2016 # Literal backtick is deliberate: asserting on brief prose.
+    assert_grep 'run `git status --short` there' "$brief" \
+      "$kind brief's self-check does not verify the primary checkout via git status"
+    # shellcheck disable=SC2016 # Literal backtick is deliberate: asserting on brief prose.
+    assert_grep 'append `blocked: edited the primary checkout` and stop' "$brief" \
+      "$kind brief's self-check does not define a blocked outcome for a dirty primary checkout"
+  done
+  pass "fm-brief.sh: ship and scout scaffolds harden isolation against mid-task drift and self-check before done"
+}
+
 test_herdr_lab_contract_is_explicit_and_complete() {
   local home id brief
   home="$TMP_ROOT/herdr-lab-home"
@@ -697,6 +754,7 @@ test_no_mistakes_dod_wording
 test_no_mistakes_handoff_uses_ready_keyword
 test_ship_project_memory_wording
 test_ship_and_scout_inherit_evidence_integrity_rules
+test_ship_and_scout_harden_isolation_against_mid_task_drift
 test_herdr_lab_contract_is_explicit_and_complete
 test_herdr_lab_contract_quotes_foreign_firstmate_path
 test_herdr_lab_omission_is_loud_for_ship_and_scout
