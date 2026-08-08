@@ -282,6 +282,34 @@ recorded_windows() {
   done
 }
 
+# Sentinel written to a window's .stale-* one-shot marker in place of a real
+# hash_pane digest (32 hex chars) when the endpoint itself is confirmed gone
+# rather than merely stale-content; never collides with a real hash.
+UNREADABLE_GONE_SENTINEL=unreadable-gone
+
+# handle_unreadable_capture: <window>'s capture just failed. Distinguish
+# "cannot read right now" from "positively no longer exists" (finding F5) by
+# consulting fm_backend_target_exists and, when the target does exist,
+# fm_backend_agent_alive. A transient failure on a live endpoint does nothing
+# here, so the caller's plain `continue` retries next poll exactly as before.
+# A confirmed-gone endpoint reuses the same one-shot .stale-* marker the
+# hash-comparison sweep below uses (keyed by <key>, the same key that sweep
+# derives from this window) so it surfaces exactly once via wake(), never
+# repeatedly, and never gets silently dropped for the rest of the session.
+handle_unreadable_capture() {  # <window> <key>
+  local win=$1 key=$2 backend agent_alive sf
+  backend=$(window_backend "$win")
+  if fm_backend_target_exists "$backend" "$win" "$(window_label "$win")" 2>/dev/null; then
+    agent_alive=$(fm_backend_agent_alive "$backend" "$win" 2>/dev/null) || agent_alive=unknown
+    [ "$agent_alive" = dead ] || return 0
+  fi
+  sf="$STATE/.stale-$key"
+  [ "$(cat "$sf" 2>/dev/null || true)" = "$UNREADABLE_GONE_SENTINEL" ] && return 0
+  fm_wake_append stale "$win" "gone: $win (endpoint unreadable and no longer exists)" || exit 1
+  printf '%s' "$UNREADABLE_GONE_SENTINEL" > "$sf"
+  wake "gone: $win"
+}
+
 # Consecutive wedge-escalation count for a window past FM_WEDGE_DEMAND_INSPECT_COUNT
 # (default 3): a pane that keeps re-wedging on the SAME stale hash - each
 # escalation gets absorbed again as "still validating" one poll later, since the
@@ -1003,7 +1031,10 @@ EOF
     if [ "$kind" = secondmate ] && ! status_is_paused "$last"; then
       continue
     fi
-    tail40=$(fm_backend_capture "$(window_backend "$w")" "$w" 40 "$(window_label "$w")" 2>/dev/null) || continue
+    tail40=$(fm_backend_capture "$(window_backend "$w")" "$w" 40 "$(window_label "$w")" 2>/dev/null) || {
+      handle_unreadable_capture "$w" "$key"
+      continue
+    }
     h=$(printf '%s' "$tail40" | hash_pane)
     key=$(printf '%s' "$w" | tr ':/.' '___')
     hf="$STATE/.hash-$key"

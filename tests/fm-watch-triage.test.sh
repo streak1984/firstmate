@@ -477,6 +477,75 @@ test_terminal_stale_surfaced() {
   pass "a stale pane sitting on a terminal status is surfaced (queue + exit)"
 }
 
+# --- capture failure on a confirmed-gone endpoint: surfaced exactly once ---
+# Regression for finding F5 (fm-herdr-friction-s1 report, W5): a pane whose
+# capture fails outright (closed tab, dead window) used to be skipped by a
+# bare `|| continue` every single poll, forever - the supervision guarantee
+# that no worker sits unnoticed silently failed for exactly this endpoint.
+# A confirmed-gone endpoint (no target, or a dead agent) must enqueue one
+# actionable wake and never repeat it while the endpoint stays gone.
+test_capture_failure_confirmed_gone_surfaces_once() {
+  local dir state fakebin out drain_out window key pid n sig
+  dir=$(make_unreadable_case capture-gone); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; drain_out="$dir/drain.out"
+  window="test:fm-closed"
+  printf 'window=%s\nkind=ship\n' "$window" > "$state/closed.meta"
+  printf 'working: doing stuff\n' > "$state/closed.status"
+  sig=$(seen_sig "$state/closed.status"); printf '%s' "$sig" > "$state/.seen-closed_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_CAPTURE_FAIL=1 FM_FAKE_TMUX_TARGET_EXISTS=0 \
+    FM_STATE_OVERRIDE="$state" FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 40 || fail "watcher did not exit for a closed pane whose capture fails"
+  grep -F "gone: $window" "$out" >/dev/null || fail "watcher did not print an actionable gone wake for the closed pane: $(cat "$out")"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the gone wake failed"
+  n=$(grep -c "$(printf '\tstale\t')" "$drain_out")
+  [ "$n" -eq 1 ] || fail "expected exactly one actionable wake enqueued for the closed pane, got $n"
+  [ "$(cat "$state/.stale-$key" 2>/dev/null || true)" = "unreadable-gone" ] \
+    || fail "gone endpoint did not record the one-shot marker"
+
+  # A second cycle over the SAME still-gone endpoint must stay quiet: the
+  # marker from the first cycle absorbs it instead of re-enqueueing.
+  : > "$out"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_CAPTURE_FAIL=1 FM_FAKE_TMUX_TARGET_EXISTS=0 \
+    FM_STATE_OVERRIDE="$state" FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  if ! wait_live "$pid" 30; then
+    reap "$pid"; fail "watcher exited again for an already-surfaced gone pane (wake storm): $(cat "$out")"
+  fi
+  [ ! -s "$out" ] || fail "the already-surfaced gone pane printed a second wake"
+  reap "$pid"
+  pass "a pane whose capture fails and is confirmed gone surfaces exactly once, not once per poll"
+}
+
+# --- capture failure while the endpoint still exists: never reported gone ---
+# The other direction of the same fail-safe: a live endpoint that only
+# transiently fails to capture must be retried, never mistaken for gone.
+test_capture_failure_transient_not_reported_gone() {
+  local dir state fakebin out window key pid sig
+  dir=$(make_unreadable_case capture-transient); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  window="test:fm-live"
+  printf 'window=%s\nkind=ship\n' "$window" > "$state/live.meta"
+  printf 'working: doing stuff\n' > "$state/live.status"
+  sig=$(seen_sig "$state/live.status"); printf '%s' "$sig" > "$state/.seen-live_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_CAPTURE_FAIL=1 FM_FAKE_TMUX_TARGET_EXISTS=1 FM_FAKE_TMUX_CURRENT_COMMAND=claude \
+    FM_FAKE_TMUX_WINDOW="$window" \
+    FM_STATE_OVERRIDE="$state" FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  if ! wait_live "$pid" 30; then
+    reap "$pid"; fail "watcher exited for a live endpoint's transient capture failure: $(cat "$out")"
+  fi
+  [ ! -s "$out" ] || fail "a transient capture failure on a live endpoint printed a wake"
+  [ ! -s "$state/.wake-queue" ] || fail "a transient capture failure on a live endpoint enqueued a wake"
+  [ ! -e "$state/.stale-$key" ] || fail "a transient capture failure on a live endpoint recorded a gone marker"
+  reap "$pid"
+  pass "a transient capture failure on a live endpoint is never reported as gone"
+}
+
 # --- stale pane, STALE terminal status overridden by an active run: absorbed ---
 # Regression for the 2026-07 herdr false-surface incidents: a crew's own status
 # log gets no new entry once firstmate hands it to a no-mistakes validation
@@ -1844,6 +1913,8 @@ test_turn_ended_not_working_surfaced
 test_working_note_not_working_surfaced
 test_actionable_signal_surfaced
 test_terminal_stale_surfaced
+test_capture_failure_confirmed_gone_surfaces_once
+test_capture_failure_transient_not_reported_gone
 test_stale_terminal_status_overridden_by_active_run
 test_nonterminal_stale_provably_working_absorbed_then_escalated
 test_wedge_escalation_marks_demand_deep_inspection_after_threshold

@@ -205,6 +205,68 @@ test_stale_terminal_escalates() {
   pass "stale + terminal status escalates immediately"
 }
 
+# --- confirmed-gone endpoint: away-mode housekeeping escalates, never clears
+# the marker silently ---
+# Regression for finding F5 (fm-herdr-friction-s1 report, W5): housekeeping's
+# stale-persistence recheck used to treat ANY capture failure as return-2
+# "can't tell" and silently `rm -f "$marker"` - worse than the watcher's
+# skip, because it actively erased the only record that this pane was ever
+# being tracked. A confirmed-gone endpoint (fm_backend_target_exists fails)
+# must instead escalate once through the same buffered digest path a genuine
+# wedge uses, and its marker is removed only AFTER that escalation is
+# recorded, not instead of it.
+test_housekeeping_stale_marker_gone_endpoint_escalates() {
+  local dir state fakebin task win key
+  dir=$(make_unreadable_case housekeeping-gone)
+  state="$dir/state"; fakebin="$dir/fakebin"
+  task="gone-w12"
+  win="sess:fm-$task"
+  fm_write_meta "$state/$task.meta" "window=$win" "backend=tmux"
+  printf 'working: doing stuff\n' > "$state/$task.status"
+  key=$(printf '%s' "$task" | tr ':/.' '___')
+  echo $(( $(date +%s) - 500 )) > "$state/.subsuper-stale-$key"
+
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_CAPTURE_FAIL=1 FM_FAKE_TMUX_TARGET_EXISTS=0 \
+    FM_STATE_OVERRIDE="$state" FM_ESCALATE_BATCH_SECS=999999 housekeeping "$state"
+
+  [ "$(wc -l < "$state/.subsuper-escalations" 2>/dev/null | tr -d ' ')" = 1 ] \
+    || fail "gone endpoint housekeeping did not produce exactly one escalation"
+  grep -F "$win" "$state/.subsuper-escalations" >/dev/null \
+    || fail "gone endpoint escalation lost the window identity"
+  grep -F "gone" "$state/.subsuper-escalations" >/dev/null \
+    || fail "gone endpoint escalation did not describe the endpoint as gone"
+  [ ! -e "$state/.subsuper-stale-$key" ] \
+    || fail "gone endpoint escalation left the stale marker in place (would refire every housekeeping tick)"
+  pass "away-mode housekeeping escalates a confirmed-gone endpoint instead of silently clearing its marker"
+}
+
+# The transient direction of the same fail-safe: a capture failure whose
+# target still exists (fm_backend_target_exists succeeds, agent not proven
+# dead) is NOT confirmed-gone, so housekeeping keeps the old "can't tell yet"
+# behavior - drop the marker without a false escalation - rather than
+# manufacturing a gone report from a flaky read.
+test_housekeeping_stale_marker_transient_capture_failure_not_escalated() {
+  local dir state fakebin task win key
+  dir=$(make_unreadable_case housekeeping-transient)
+  state="$dir/state"; fakebin="$dir/fakebin"
+  task="live-w13"
+  win="sess:fm-$task"
+  fm_write_meta "$state/$task.meta" "window=$win" "backend=tmux"
+  printf 'working: doing stuff\n' > "$state/$task.status"
+  key=$(printf '%s' "$task" | tr ':/.' '___')
+  echo $(( $(date +%s) - 500 )) > "$state/.subsuper-stale-$key"
+
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_CAPTURE_FAIL=1 FM_FAKE_TMUX_TARGET_EXISTS=1 FM_FAKE_TMUX_CURRENT_COMMAND=claude \
+    FM_FAKE_TMUX_WINDOW="$win" \
+    FM_STATE_OVERRIDE="$state" FM_ESCALATE_BATCH_SECS=999999 housekeeping "$state"
+
+  [ ! -s "$state/.subsuper-escalations" ] \
+    || fail "a transient capture failure on a live endpoint produced a false gone escalation"
+  [ ! -e "$state/.subsuper-stale-$key" ] \
+    || fail "a transient capture failure left a stale marker behind instead of the established drop-and-retry behavior"
+  pass "away-mode housekeeping does not report a transiently unreadable but live endpoint as gone"
+}
+
 # A DECLARED external-wait pause (paused:) is neither a wedge nor a terminal
 # escalation: classify_stale returns the `pause` action so handle_wake records a
 # pause marker (long re-surface cadence) rather than a wedge stale marker.
@@ -1884,6 +1946,8 @@ test_classify_check_and_unknown_escalate
 test_stale_transient_self_records_marker
 test_stale_diagnostic_wedge_survives_busy_housekeeping
 test_stale_terminal_escalates
+test_housekeeping_stale_marker_gone_endpoint_escalates
+test_housekeeping_stale_marker_transient_capture_failure_not_escalated
 test_stale_paused_classifies_pause
 test_handle_wake_paused_records_pause_marker
 test_handle_wake_paused_signal_records_pause_marker

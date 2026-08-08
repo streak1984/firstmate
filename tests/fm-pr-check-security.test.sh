@@ -104,7 +104,35 @@ printf '%s\n' "$*" >> "$FM_TEST_GLAB_LOG"
 [ "${FM_TEST_GLAB_SLEEP:-0}" = 0 ] || sleep "$FM_TEST_GLAB_SLEEP"
 printf 'title:\tfixture merge request\nstate:\t%s\nauthor:\tsomeone\n' "${FM_TEST_GLAB_STATE:-opened}"
 SH
-  chmod +x "$fakebin/gh" "$fakebin/gh-axi" "$fakebin/glab"
+  # Minimal fake tmux: this suite never faked a window before, so a task's
+  # capture always failed and fm-watch.sh's stale sweep silently `continue`d
+  # past it (irrelevant to the PR-check behavior under test here). Finding F5
+  # (fm-herdr-friction-s1 report) made a capture failure actionable when the
+  # endpoint is confirmed gone, which a real unfaked "tmux" (not found, or a
+  # real window that never exists) always is - so an unbounded watcher run
+  # would now surface and exit on that unrelated gone task before ever
+  # reaching a real check completion. Always-successful capture with a
+  # per-call-changing tick keeps the window out of both the stale sweep (hash
+  # never repeats) and F5's gone-endpoint path (capture never fails).
+  cat > "$fakebin/tmux" <<SH
+#!/usr/bin/env bash
+set -u
+case "\${1:-}" in
+  capture-pane)
+    ctr="$dir/tmux-capture-counter"
+    n=\$(( \$(cat "\$ctr" 2>/dev/null || echo 0) + 1 ))
+    echo "\$n" > "\$ctr"
+    printf 'fixture pane tick %s\n' "\$n"
+    exit 0 ;;
+  display-message)
+    printf 'fakepane\n'
+    exit 0 ;;
+  list-windows)
+    exit 0 ;;
+esac
+exit 1
+SH
+  chmod +x "$fakebin/gh" "$fakebin/gh-axi" "$fakebin/glab" "$fakebin/tmux"
   : > "$dir/gh.log"
   : > "$dir/gh-axi.log"
   : > "$dir/glab.log"

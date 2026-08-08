@@ -91,6 +91,45 @@ SH
   printf '%s\n' "$dir"
 }
 
+# make_unreadable_case: like make_case, but its fake tmux can fail capture-pane
+# (FM_FAKE_TMUX_CAPTURE_FAIL=1) and answer the generic existence probe
+# fm_backend_target_exists issues (tmux display-message -p -t <target>
+# '#{pane_id}', no pane_current_command argument), success unless
+# FM_FAKE_TMUX_TARGET_EXISTS=0. Drives the capture-failure / gone-endpoint
+# paths (bin/fm-watch.sh's handle_unreadable_capture, bin/fm-supervise-daemon.sh's
+# stale_window_is_busy) independently of whether the target and its agent still
+# exist, which make_case's fake cannot express.
+make_unreadable_case() {
+  local name=$1 dir fakebin
+  dir="$TMP_ROOT/$name"
+  fakebin="$dir/fakebin"
+  mkdir -p "$dir/state" "$fakebin"
+  cat > "$fakebin/tmux" <<'SH'
+#!/usr/bin/env bash
+set -u
+case "${1:-}" in
+  list-windows)
+    [ -n "${FM_FAKE_TMUX_WINDOW:-}" ] && printf '%s\n' "${FM_FAKE_TMUX_WINDOW#*:}"
+    exit 0 ;;
+  capture-pane)
+    [ "${FM_FAKE_TMUX_CAPTURE_FAIL:-0}" = 1 ] && exit 1
+    [ -n "${FM_FAKE_TMUX_CAPTURE:-}" ] && cat "$FM_FAKE_TMUX_CAPTURE"
+    exit 0 ;;
+  display-message)
+    case "$*" in
+      *pane_current_command*) printf '%s\n' "${FM_FAKE_TMUX_CURRENT_COMMAND:-}"; exit 0 ;;
+    esac
+    [ "${FM_FAKE_TMUX_TARGET_EXISTS:-1}" = 1 ] || exit 1
+    for a in "$@"; do [ "$a" = "-p" ] && { printf 'fakepane\n'; exit 0; }; done
+    exit 0 ;;
+esac
+exit 1
+SH
+  chmod +x "$fakebin/tmux"
+  make_fake_crew_state "$fakebin" >/dev/null
+  printf '%s\n' "$dir"
+}
+
 # Install a hermetic fake fm-crew-state.sh into <fakebin> and echo its path. The
 # watcher's absorb-only-when-provably-working triage calls this (via
 # FM_CREW_STATE_BIN) to read a crew's current state on no-verb signal and stale

@@ -615,17 +615,28 @@ task_window_harness() {  # <window> <state>
 }
 
 # stale_window_is_busy: 0 when the task is PROVABLY working through the
-# semantic busy-state contract (bin/fm-busy-lib.sh), 1 when it is not, and 2
-# when the endpoint could not be read at all. Only an exact busy verdict is
-# working: unknown semantic state never becomes busy and never becomes a
-# silent idle, so a stale pane whose state cannot be proven surfaces.
+# semantic busy-state contract (bin/fm-busy-lib.sh), 1 when it is not, 2 when
+# the endpoint could not be read but may still exist (transient - retry
+# later), and 3 when the endpoint is confirmed gone (fm_backend_target_exists
+# fails, or the target exists with fm_backend_agent_alive reporting dead).
+# Only an exact busy verdict is working: unknown semantic state never becomes
+# busy and never becomes a silent idle, so a stale pane whose state cannot be
+# proven surfaces. Distinguishing 2 from 3 lets callers escalate a confirmed-
+# gone endpoint instead of silently clearing its marker (finding F5).
 stale_window_is_busy() {  # <window> <state>
-  local win=$1 state=$2 backend harness label task tail40 verdict
+  local win=$1 state=$2 backend harness label task tail40 verdict agent_alive
   backend=$(task_window_backend "$win" "$state")
   harness=$(task_window_harness "$win" "$state")
   task=$(window_to_task "$win" "$state")
   label="fm-$task"
-  tail40=$(fm_backend_capture "$backend" "$win" 40 "$label" 2>/dev/null) || return 2
+  if ! tail40=$(fm_backend_capture "$backend" "$win" 40 "$label" 2>/dev/null); then
+    if fm_backend_target_exists "$backend" "$win" "$label" 2>/dev/null; then
+      agent_alive=$(fm_backend_agent_alive "$backend" "$win" 2>/dev/null) || agent_alive=unknown
+      [ "$agent_alive" = dead ] && return 3
+      return 2
+    fi
+    return 3
+  fi
   verdict=$(fm_busy_classify "$backend" "$win" "$harness" "$task" "$state" "$tail40")
   [ "${verdict%% *}" = busy ]
 }
@@ -1014,6 +1025,8 @@ housekeeping() {  # <state>
     case "$?" in
       0) rm -f "$marker" ;;
       2) rm -f "$marker" ;;
+      3) escalate_add "$state" "endpoint gone, no longer reachable (was stale ${age}s): $win"
+         stale_marker_remove "$win" "$state" ;;
       *) escalate_add "$state" "stale persisted ${age}s (possible wedge): $win"
          stale_marker_remove "$win" "$state" ;;
     esac
@@ -1045,6 +1058,8 @@ housekeeping() {  # <state>
     case "$?" in
       0) rm -f "$marker" ;;
       2) rm -f "$marker" ;;
+      3) escalate_add "$state" "endpoint gone while paused, no longer reachable (was paused ${age}s): $win"
+         rm -f "$marker" ;;
       *)
         last=$(last_status_line "$state/$task.status")
         if [ -n "$last" ] && status_is_paused "$last"; then
