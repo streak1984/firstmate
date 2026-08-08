@@ -134,8 +134,13 @@
 # processing the brief, a parked interactive prompt is detected, or the launch
 # failed, then prints the single outcome line as the FINAL stdout line:
 #   confirm: processing <detail>   worker turn running from a harness-owned
-#                                  busy source, or kimi's delivery phase
-#                                  confirmed the brief pointer consumed
+#                                  busy source, kimi's delivery phase
+#                                  confirmed the brief pointer consumed, or -
+#                                  while the only record is fm-spawn's own
+#                                  launch seed - a capability-gated backend's
+#                                  native busy read corroborated it
+#                                  (fm_busy_native_busy_capable in
+#                                  bin/fm-busy-lib.sh; herdr today)
 #   confirm: dialog <detail>       a parked interactive prompt (directory
 #                                  trust, sudo, git credential, ssh
 #                                  passphrase); reported, never auto-answered
@@ -1539,7 +1544,7 @@ spawn_parked_prompt_visible() {  # <plain-pane-capture>
 # keeps polling. Composer content is consulted only at timeout, so the launch
 # text's own submit latency never reads as failure.
 spawn_confirm_launch() {  # -> "<state> <detail>" on stdout; 1 only on failed
-  local timeout interval max i=0 verdict v src pane last_reason=no-evidence composer
+  local timeout interval max i=0 verdict v src pane last_reason=no-evidence composer native
   case "$HARNESS" in
     kimi*)
       # The kimi phase above already confirmed the brief pointer consumed.
@@ -1576,6 +1581,22 @@ spawn_confirm_launch() {  # -> "<state> <detail>" on stdout; 1 only on failed
         if [ "$src" != fm-spawn ]; then
           printf 'processing busy/%s' "$src"
           return 0
+        fi
+        # The only record is fm-spawn's own launch seed, never advanced by a
+        # real lifecycle event yet - this is the sole precondition; once any
+        # other trusted record lands, the branch above already returns first.
+        # A capability-gated native busy read (fm_busy_native_busy_capable in
+        # bin/fm-busy-lib.sh; herdr's agent generation state today) is
+        # positive evidence the worker is processing and can corroborate the
+        # seed instead of waiting on that harness's own lifecycle wiring. An
+        # absent, unknown, or unreadable native verdict changes nothing and
+        # the loop keeps polling exactly as before.
+        if fm_busy_native_busy_capable "$BACKEND" && command -v fm_backend_busy_state >/dev/null 2>&1; then
+          native=$(fm_backend_busy_state "$BACKEND" "$T" 2>/dev/null || true)
+          if [ "$native" = busy ]; then
+            printf 'processing busy/herdr-native'
+            return 0
+          fi
         fi
         last_reason=no-busy-event
         ;;

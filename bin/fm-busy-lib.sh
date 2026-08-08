@@ -56,10 +56,11 @@
 #      call - inherits it) -> dead agent-gone
 #   3. standalone Kimi before verification       -> unknown kimi-unverified
 #   4. a valid, gen-matching, source-trusted record -> its state and source
-#   5. no record at all: herdr's native busy verdict is trusted as busy
-#      (generation state is sufficient for busy, not for idle), then the
-#      Grok-only temporary regex fallback classifies a grok task from its
-#      rendered tail, then unknown missing
+#   5. no record at all: a capability-gated (fm_busy_native_busy_capable)
+#      backend's native busy verdict is trusted as busy (generation state is
+#      sufficient for busy, not for idle), then the Grok-only temporary regex
+#      fallback classifies a grok task from its rendered tail, then unknown
+#      missing
 #   6. malformed, stale, or untrusted records -> unknown, never a fallback
 #
 # Step 2's capability gate (fm_busy_agent_proof_capable) is deliberately
@@ -82,6 +83,16 @@
 # another adapter. The delivery guards in bin/fm-tmux-lib.sh match rendered
 # footers for submit acknowledgement and away-mode supervisor injection only;
 # neither is a recorded worker state source.
+#
+# Second consumer of the same capability gate: bin/fm-spawn.sh's
+# spawn_confirm_launch also calls fm_busy_native_busy_capable, but for a
+# narrower exception than step 5 above - while the ONLY record for a freshly
+# spawned target is fm-spawn's own launch seed (never advanced by a real
+# lifecycle event), it treats a capable backend's native busy read as
+# corroborating that seed instead of polling to the confirm timeout. That
+# exception is scoped to the still-seed-only case; once a real lifecycle
+# record exists, step 4 above wins exactly as documented and the native read
+# is never consulted.
 #
 # Codex negotiation (fm_busy_codex_appserver_observable,
 # fm_busy_codex_hooks_verified): the approved contract prefers Codex's
@@ -158,6 +169,18 @@ fm_busy_codex_semantic_source() {
 # no agent registered" to dead ahead of the record read. See the header
 # comment for why tmux's own fm_backend_agent_alive answer does not qualify.
 fm_busy_agent_proof_capable() {  # <backend>
+  case "$1" in
+    herdr) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# fm_busy_native_busy_capable: 0 when <backend> exposes a native busy read
+# (fm_backend_busy_state) trustworthy enough to corroborate BUSY - real
+# generation/turn state, not a UI guess. Step 5 below and
+# bin/fm-spawn.sh's spawn_confirm_launch both gate on this rather than
+# naming a backend inline, so a future capable backend needs one change here.
+fm_busy_native_busy_capable() {  # <backend>
   case "$1" in
     herdr) return 0 ;;
     *) return 1 ;;
@@ -344,7 +367,7 @@ fm_busy_classify() {  # <backend> <target> <harness> <id> <state-dir> [tail40]
   # for BUSY (streaming means a turn is running); native idle is narrower
   # than turn state (a long foreground tool call reads idle) and stays
   # unknown here.
-  if [ "$backend" = herdr ] && command -v fm_backend_busy_state >/dev/null 2>&1; then
+  if fm_busy_native_busy_capable "$backend" && command -v fm_backend_busy_state >/dev/null 2>&1; then
     native=$(fm_backend_busy_state "$backend" "$target" 2>/dev/null || true)
     if [ "$native" = busy ]; then
       printf 'busy herdr-native'
