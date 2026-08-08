@@ -741,6 +741,33 @@ unit_stop_early_failure_arms_live_fallback() {
   rm -rf "$st"
 }
 
+unit_fallback_retire_rollback_restores_primary_record() {
+  local st before after
+  st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-retire-rollback.XXXXXX")
+  mkdir -p "$st/state"
+  printf 'tmux\toriginal-session\towned\n' > "$st/state/.afk-daemon-terminal"
+  before=$(cat "$st/state/.afk-daemon-terminal")
+  if FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" bash -c '
+    . "$1"
+    daemon_lock_held_by_live_daemon() { return 1; }
+    discover_supervisor_target() { printf "captain:0\n"; }
+    discover_supervisor_backend() { printf "tmux\n"; }
+    fm_afk_launch_create_tmux() { return 1; }
+    ! fm_afk_launch_fallback_start
+  ' _ "$LAUNCH"; then
+    after=$(cat "$st/state/.afk-daemon-terminal" 2>/dev/null || true)
+    if [ "$after" = "$before" ] \
+      && ! find "$st/state" -name '.afk-daemon-terminal.retired.*' -print -quit | grep -q .; then
+      pass "fallback rollback: retired exact record returns to the canonical path unchanged"
+    else
+      fail "fallback rollback: retired record was lost, changed, or stranded"
+    fi
+  else
+    fail "fallback rollback: failed launch did not return failure"
+  fi
+  rm -rf "$st"
+}
+
 unit_stop_terminal_cleanup_failure_is_still_a_full_stop() {
   local st out rc
   st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-stop-cleanup.XXXXXX")
@@ -1016,6 +1043,7 @@ unit_stop_validates_before_signal
 unit_lock_requires_complete_metadata
 unit_stop_afk_removal_failure_arms_live_fallback
 unit_stop_early_failure_arms_live_fallback
+unit_fallback_retire_rollback_restores_primary_record
 unit_stop_terminal_cleanup_failure_is_still_a_full_stop
 unit_stop_confirms_daemon_exit
 unit_refresh_validates_record

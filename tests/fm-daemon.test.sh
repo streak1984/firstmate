@@ -1114,7 +1114,7 @@ test_seen_terminal_stale_realerts_for_observed_idleness() {
   dir=$(make_supercase seen-terminal-idle)
   state="$dir/state"
   fakebin="$dir/fakebin"
-  task=seen-done-w11
+  task='seen-done-w11'
   win="sess:fm-$task"
   key=$(printf '%s' "$task" | tr ':/.' '___')
   pane="$dir/pane.txt"

@@ -267,15 +267,15 @@ fm_afk_launch_close_recorded() {
 }
 
 fm_afk_launch_reconcile_retired() {
-  local retired result=0
+  local retired result=0 primary_record
+  primary_record=$FM_AFK_LAUNCH_RECORD
+  local FM_AFK_LAUNCH_RECORD=$primary_record
   for retired in "$FM_AFK_LAUNCH_RETIRED_PREFIX".*; do
     [ -e "$retired" ] || continue
-    (
-      FM_AFK_LAUNCH_RECORD=$retired
-      fm_afk_launch_record_read || exit $?
-      fm_afk_launch_close_recorded
-    ) || result=1
+    FM_AFK_LAUNCH_RECORD=$retired
+    fm_afk_launch_record_read && fm_afk_launch_close_recorded || result=1
   done
+  FM_AFK_LAUNCH_RECORD=$primary_record
   return "$result"
 }
 
