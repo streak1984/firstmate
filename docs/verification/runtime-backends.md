@@ -120,8 +120,52 @@ Claude, Codex, OpenCode, Pi, pi-signed, Grok, and Kimi share that backend cleanu
 ## Herdr
 
 The compatibility floor is protocol 14.
-The latest active verification uses Herdr 0.7.5 protocol 17 on macOS aarch64, with earlier 0.7.4, protocol-16, protocol-14, and 0.7.3 evidence retained where they define current behavior or fallbacks.
-Protocol 17 keeps every protocol-16 feature gate satisfied; the event and workspace-move floors remain 16.
+The latest active verification uses Herdr 0.8.0 protocol 19 on macOS aarch64, with earlier 0.7.5, 0.7.4, protocol-16, protocol-14, and 0.7.3 evidence retained where they define current behavior or fallbacks.
+Protocol 19 keeps every protocol-16 and protocol-17 feature gate satisfied; the event and workspace-move floors remain 16.
+
+### 0.8.0 protocol 19 reverification
+
+Reverified 2026-08-08 against Herdr 0.8.0 in a guarded `bin/fm-herdr-lab.sh` session.
+
+```sh
+herdr --version
+herdr status --json | jq -c '{client:.client.protocol,server:.server.protocol}'
+herdr api schema --json | jq -c '.schemas.subscription_event["$defs"].SubscriptionEventKind.enum'
+```
+
+```text
+herdr 0.8.0
+{"client":19,"server":19}
+["pane.output_matched","pane.agent_status_changed","pane.scroll_changed"]
+```
+
+Two behavior facts from `data/fm-herdr-friction-s1/report.md` finding F6 were independently reproduced live, not just re-read from that report.
+
+**Focus is no longer stolen when the last pane of a non-focused workspace closes.**
+With workspace `w1` focused and workspace `w2` holding one pane as its only tab:
+
+```sh
+herdr workspace list | jq -c '[.result.workspaces[] | select(.focused==true)][0] | {workspace_id,active_tab_id}'
+herdr pane close w2:p1
+herdr workspace list | jq -c '.result.workspaces[] | {workspace_id,label,focused}'
+```
+
+Before close: `{"workspace_id":"w1","active_tab_id":"w1:t1"}`.
+After close: only `{"workspace_id":"w1","label":"probe","focused":true}` remains; `w2` is gone (its last-tab close removed the whole workspace) and `w1` stayed focused throughout.
+This is what fails the negative control in `tests/fm-backend-herdr-presentation-e2e.test.sh` (a Herdr-side steal is no longer reproducible to stage against); the fix is recorded there and in `data/fm-herdr-080-verify-w6/report.md`.
+
+**`pane read --lines N` still returns nothing for N below the viewport height.**
+Against a pane with real content past the bottom of a 24-row viewport:
+
+```sh
+herdr pane read <pane> --source recent --lines 3
+herdr pane read <pane> --source recent --lines 10
+herdr pane read <pane> --source recent --lines 23
+herdr pane read <pane> --source recent --lines 200
+```
+
+N of 3 and 10 returned 0 bytes; N of 23 and 200 both returned the same 68-byte plateau (the full viewport content, not scaled by N).
+`bin/backends/herdr.sh`'s existing 200-line-floor-then-`tail` workaround (`fm_backend_herdr_capture`) still correctly compensates for this and needed no change.
 
 Core read-only probes:
 

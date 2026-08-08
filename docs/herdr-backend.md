@@ -1,7 +1,7 @@
 # Herdr runtime backend
 
 Herdr is an experimental agent-native terminal backend with native per-pane agent state and push events.
-Firstmate requires Herdr protocol 14 or newer; versions 0.7.1, 0.7.3, 0.7.4, and 0.7.5 are verified, with protocol-16 features enabled only when available.
+Firstmate requires Herdr protocol 14 or newer; versions 0.7.1, 0.7.3, 0.7.4, 0.7.5, and 0.8.0 (protocol 19) are verified, with protocol-16 features enabled only when available.
 Herdr provides the terminal session while Treehouse continues to provide task worktrees.
 [`configuration.md`](configuration.md#runtime-backend-configbackend--fm_backend) owns shared backend selection and metadata semantics.
 
