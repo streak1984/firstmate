@@ -198,6 +198,7 @@ Each secondmate reconciles work already in its own home and then idles; recovery
 If away mode is present, load `/afk` and let its daemon own supervision rather than arming another cycle.
 Surface only captain-relevant decisions, review-ready PRs, failures, and credential needs; otherwise resume the emitted supervision protocol silently.
 A restart must be a non-event because durable state and live backend inventory, not conversation memory, are authoritative.
+When the captain invokes `/fleet-standdown` or asks to stand the fleet down before restarting or closing the terminal layer, load the `fleet-standdown` skill; it owns the readiness judgment, evidence routing, captain surfacing, and handoff to the deterministic command.
 
 ## 6. Project and knowledge management
 

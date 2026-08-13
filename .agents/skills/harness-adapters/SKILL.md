@@ -27,9 +27,10 @@ Inheritance also copies the literal `config/crew-dispatch.json` file, so secondm
 
 Each adapter splits into mechanics and knowledge.
 The per-task mechanics, including launch command, autonomy flag, and any enabled crewmate turn-end hook, live in `bin/fm-spawn.sh`.
+The verified clean-exit command bytes live in `bin/fm-harness.sh exit-command <harness>` so lifecycle scripts use one executable owner.
 The primary-session "no turn ends blind" guard contract and harness hook installation paths live in `docs/turnend-guard.md`.
 The primary-session watcher wake protocols are rendered from `docs/supervision-protocols/` by `bin/fm-supervision-instructions.sh`.
-The supervision knowledge lives here: busy state, exit command, interrupt, dialogs, resume behavior, skill invocation, and quirks.
+The supervision knowledge lives here: when clean exit applies, busy state, interrupt, dialogs, resume behavior, skill invocation, and quirks.
 Each adapter's `Busy state` row names only which semantic source that harness uses; `bin/fm-busy-lib.sh` owns the contract itself, including verdicts, source attribution, and the verification gates that keep an unverified harness at unknown.
 
 Never dispatch a crewmate or secondmate on an unverified adapter.
@@ -176,7 +177,7 @@ The shared symptom is a healthy-looking pane with no work in progress, so each a
 | Fact | Value |
 |---|---|
 | Busy state | Owned lifecycle hooks: `UserPromptSubmit` opens a turn, `Stop`, `StopFailure`, and `SessionEnd` close it. Claude fires no hook for a manual interrupt, so a firstmate-initiated interrupt must record the clear itself. |
-| Exit command | `/exit` |
+| Exit command | Resolve with `bin/fm-harness.sh exit-command claude`. |
 | Interrupt | single Escape |
 | Skill invocation | `/<skill>` (e.g. `/no-mistakes`) |
 | Autonomy | Firstmate requests `bypassPermissions`; `fm-spawn` accepts Claude's verified `bypass permissions on` footer and warns without stopping the worker when the footer instead reports verified `auto mode on` or `manual mode on`, naming `permissions.disableBypassPermissionsMode` or organization policy as the likely cause. |
@@ -208,7 +209,7 @@ Claude Code's primary watcher protocol is Stop-owned: the auto-arm hook fires on
 |---|---|
 | Busy state | Unknown until a semantic source is live-verified: the app-server turn lifecycle is unreachable for a pane worker, and project lifecycle hooks did not fire for a firstmate-launched worker. |
 | Rendered idle watchdog | `esc to interrupt` is present in the bounded pane tail while a turn is running and absent after Codex ends the turn; this adapter-scoped token drives only the watcher's 180-second continuous-idle alarm and never changes the semantic `unknown codex-unverified` verdict. |
-| Exit command | `/quit` (slash popup needs about 1 second between text and Enter; `fm-send` handles it) |
+| Exit command | Resolve with `bin/fm-harness.sh exit-command codex`; its slash popup needs about 1 second between text and Enter. |
 | Interrupt | single Escape |
 | Skill invocation | `$<skill>` (e.g. `$no-mistakes`); `/<skill>` is claude-only and codex rejects it as "Unrecognized command" |
 
@@ -244,7 +245,7 @@ The checkpoint is deliberately foreground and bounded so Codex regains control r
 | Fact | Value |
 |---|---|
 | Busy state | The Firstmate-owned plugin's semantic `session.status`: `busy` and `retry` are active, `idle` is inactive, latched to the worker's own session. |
-| Exit command | `/exit` |
+| Exit command | Resolve with `bin/fm-harness.sh exit-command opencode`. |
 | Interrupt | double Escape; known flaky while a long shell command runs, so a wedged pane may need `/exit` and relaunch |
 
 No trust dialog.
@@ -281,7 +282,7 @@ The follow-up was verified in the interactive TUI; `opencode run` can exit befor
 | Fact | Value |
 |---|---|
 | Busy state | The Firstmate-owned extension's `agent_start` (busy) and `agent_settled` confirmed by `ctx.isIdle()` (idle), which covers retries, compaction, tool loops, and queued continuations. |
-| Exit command | `/quit` |
+| Exit command | Resolve with `bin/fm-harness.sh exit-command pi` or `pi-signed`. |
 | Interrupt | single Escape |
 
 Pi has no permission system, so crewmates are always autonomous.
@@ -321,7 +322,7 @@ For Grok's supported reasoning-effort values and omission behavior, see the [lau
 | Fact | Value |
 |---|---|
 | Busy state | The one remaining rendered-tail fallback, isolated to Grok until its structured lifecycle is live-verified: `Ctrl+c:cancel`, the mid-turn cancel hint shown in grok's keybind bar iff a turn is running. The idle bar shows only `Shift+Tab:mode │ Ctrl+.:shortcuts`. ASCII is matched rather than the braille spinner to avoid locale fragility. |
-| Exit command | `/exit` typed into the composer exits the TUI cleanly and prints `Resume this session with: grok --resume <session-id>`; `Ctrl+Q` double-press within 1000ms remains a fallback; `Ctrl+D` is the quit key in VS Code family terminals; `Ctrl+C` is the interrupt, not the exit. |
+| Exit command | Resolve with `bin/fm-harness.sh exit-command grok`; the command typed into the composer exits the TUI cleanly and prints `Resume this session with: grok --resume <session-id>`; `Ctrl+Q` double-press within 1000ms remains a fallback; `Ctrl+D` is the quit key in VS Code family terminals; `Ctrl+C` is the interrupt, not the exit. |
 | Interrupt | single `Ctrl+C` (cancels the current turn; the footer shows `Ctrl+c:cancel` mid-turn). `Esc` only moves focus to the scrollback, it does NOT interrupt. |
 | Skill invocation | `/<skill>` (e.g. `/no-mistakes`), same as claude. Opens a slash-autocomplete popup, so a too-fast Enter selects the popup entry instead of sending. For an argument-taking command that first Enter does not submit at all - it expands the selection into an argument-hint placeholder in the composer (e.g. `/compact` -> `/compact compaction instructions`, live-verified), leaving real text still sitting there unsubmitted; a genuine second Enter is required. `fm-send`'s retried Enter lands it on BOTH backends, but only because each backend's own submit-verification correctly recognizes that placeholder-filled text as still-pending - see the incident below. |
 | Autonomy | `--always-approve` (footer shows `· always-approve`); auto-approves every tool execution, verified to run fully unattended. `--permission-mode bypassPermissions` is the stronger equivalent. |
@@ -378,7 +379,7 @@ Kimi Code CLI launches from the absolute path resolved from `PATH`, falling back
 | Launch | Bare interactive TUI with `--auto`, followed by readiness-gated pointer delivery; positional prompts are rejected. |
 | Models | `kimi-code/kimi-for-coding` (default), `kimi-code/kimi-for-coding-highspeed`, `kimi-code/k3`, and `kimi-code/k3-256k`. |
 | Busy state | Standalone Kimi is unknown until a semantic source is live-verified; prefer Wire's `prompt` request lifetime, then documented hooks including `Interrupt`. Kimi behind Pi uses Pi's lifecycle. Its moon-phase spinner is not a state source. |
-| Exit command | `/exit` |
+| Exit command | Resolve with `bin/fm-harness.sh exit-command kimi`. |
 | Interrupt | Single Escape, which prints `Interrupted by user`. |
 | Skill invocation | `/<skill>`, for example `/no-mistakes`; firstmate skills are discovered. |
 | Autonomy | `--auto`; `-y` and `--yolo` are weaker and are not used. |

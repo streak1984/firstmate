@@ -52,10 +52,17 @@
 # leased home releases its durable treehouse lease so the pool slot is freed,
 # never left leased forever. If the treehouse return fails, teardown leaves the
 # leased home and state in place instead of hiding a still-held lease.
-# Usage: fm-teardown.sh <task-id> [--force]
+# Usage: fm-teardown.sh <task-id> [--force|--check-only]
 #   --force skips ordinary-task dirty and landed-work checks, skips scout report
 #   checks, and discards secondmate child work for kind=secondmate. Only use it
 #   when the captain has explicitly said to discard the work.
+#   --check-only runs the same non-force safety gates and exits before endpoint,
+#   worktree, task-state, backlog, registry, or home mutation. It disables Git's
+#   optional locks, never fetches, and gives merge-tree a temporary object store,
+#   so a caller can prove teardown eligibility without changing the inspected
+#   clone. Evidence unavailable from current local refs causes a conservative
+#   refusal instead of a fetch. This is the landed-work owner used by fleet
+#   stand-down's all-read-only preflight.
 #
 # Transient / stale worktree git lock recovery (teardown-lock-race): a crew process
 # killed mid-git-operation can leave a .git/worktrees/<wt>/index.lock (or, for a
@@ -113,7 +120,21 @@ if [ "$#" -lt 1 ] || ! fm_task_id_path_safe "$1"; then
   exit 2
 fi
 ID=$1
-FORCE=${2:-}
+REQUEST=${2:-}
+CHECK_ONLY=0
+case "$REQUEST" in
+  '') FORCE= ;;
+  --force) FORCE=--force ;;
+  --check-only)
+    FORCE=
+    CHECK_ONLY=1
+    export GIT_OPTIONAL_LOCKS=0
+    ;;
+  *)
+    echo "error: invalid teardown option $REQUEST; expected --force or --check-only" >&2
+    exit 2
+    ;;
+esac
 # Fail closed before any fleet mutation: a no-mistakes gate agent must never tear
 # down a worktree (see bin/fm-gate-refuse-lib.sh).
 fm_refuse_if_gate_agent
@@ -131,7 +152,9 @@ WT=$(fm_meta_get "$META" worktree)
 PROJ=$(fm_meta_get "$META" project)
 T_ORCA=
 [ "$BACKEND" != orca ] || T_ORCA=$T
-"$FM_ROOT/bin/fm-guard.sh" || true
+if [ "$CHECK_ONLY" -eq 0 ]; then
+  "$FM_ROOT/bin/fm-guard.sh" || true
+fi
 HOME_PATH=$(grep '^home=' "$META" | cut -d= -f2- || true)
 PR_URL=$(grep '^pr=' "$META" | tail -1 | cut -d= -f2- || true)
 # tasktmp is recorded by fm-spawn for tasks that set up a per-task temp root
@@ -143,6 +166,16 @@ if [ -z "$BUSY_GEN" ]; then
 fi
 ORCA_WORKTREE_ID=$(fm_meta_get "$META" orca_worktree_id)
 ORCA_PATH_MATCH_VERIFIED=0
+CHECK_OBJECT_DIR=
+
+cleanup_check_object_dir() {
+  [ -n "$CHECK_OBJECT_DIR" ] || return 0
+  case "$CHECK_OBJECT_DIR" in
+    "${TMPDIR:-/tmp}"/fm-teardown-check.*) rm -rf -- "$CHECK_OBJECT_DIR" ;;
+  esac
+  CHECK_OBJECT_DIR=
+}
+trap cleanup_check_object_dir EXIT
 
 KIND=$(grep '^kind=' "$META" | cut -d= -f2- || true)
 [ -n "$KIND" ] || KIND=ship
@@ -479,11 +512,13 @@ pr_is_merged() {
 # "added". Returns non-zero when inconclusive (no default ref, or a merge conflict),
 # so the caller refuses rather than guesses.
 content_in_default() {
-  local name ref default_tree merged_tree
+  local name ref default_tree merged_tree common_dir common_objects
   name=$(default_branch) || return 1
   if git -C "$WT" remote get-url origin >/dev/null 2>&1; then
-    git -C "$WT" fetch --quiet origin "+refs/heads/$name:refs/remotes/origin/$name" >/dev/null 2>&1 || return 1
     ref="refs/remotes/origin/$name"
+    if [ "$CHECK_ONLY" -eq 0 ]; then
+      git -C "$WT" fetch --quiet origin "+refs/heads/$name:refs/remotes/origin/$name" >/dev/null 2>&1 || return 1
+    fi
   elif git -C "$WT" rev-parse --quiet --verify "refs/heads/$name" >/dev/null 2>&1; then
     ref="refs/heads/$name"
   else
@@ -491,7 +526,19 @@ content_in_default() {
   fi
   default_tree=$(git -C "$WT" rev-parse --quiet --verify "$ref^{tree}" 2>/dev/null) || return 1
   [ -n "$default_tree" ] || return 1
-  merged_tree=$(git -C "$WT" merge-tree --write-tree "$ref" HEAD 2>/dev/null) || return 1
+  if [ "$CHECK_ONLY" -eq 1 ]; then
+    common_dir=$(git -C "$WT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 1
+    common_objects="$common_dir/objects"
+    [ -d "$common_objects" ] || return 1
+    if [ -z "$CHECK_OBJECT_DIR" ]; then
+      CHECK_OBJECT_DIR=$(mktemp -d "${TMPDIR:-/tmp}/fm-teardown-check.XXXXXX") || return 1
+    fi
+    merged_tree=$(GIT_OBJECT_DIRECTORY="$CHECK_OBJECT_DIR" \
+      GIT_ALTERNATE_OBJECT_DIRECTORIES="$common_objects" \
+      git -C "$WT" merge-tree --write-tree "$ref" HEAD 2>/dev/null) || return 1
+  else
+    merged_tree=$(git -C "$WT" merge-tree --write-tree "$ref" HEAD 2>/dev/null) || return 1
+  fi
   merged_tree=$(printf '%s\n' "$merged_tree" | head -1)
   [ "$merged_tree" = "$default_tree" ]
 }
@@ -503,6 +550,13 @@ content_in_default() {
 # only for genuinely unlanded work.
 work_is_landed() {
   local branch=$1
+  if [ "$CHECK_ONLY" -eq 1 ]; then
+    # Stand-down may not fetch into or write objects in an inspected clone.
+    # Current local refs plus the temporary merge object store are the strongest
+    # byte-preserving proof available; missing fresh evidence refuses safely.
+    content_in_default
+    return
+  fi
   pr_is_merged "$branch" && return 0
   content_in_default
 }
@@ -1144,7 +1198,9 @@ remove_secondmate_registry_entry() {
   mv "$tmp" "$SECONDMATE_REG"
 }
 
-validate_pr_poll_cleanup "$STATE" "$ID" || exit 1
+if [ "$CHECK_ONLY" -eq 0 ]; then
+  validate_pr_poll_cleanup "$STATE" "$ID" || exit 1
+fi
 
 if [ "$KIND" = secondmate ]; then
   [ -n "$HOME_PATH" ] || HOME_PATH=$WT
@@ -1223,12 +1279,21 @@ if [ -d "$WT" ] && [ "$FORCE" != "--force" ]; then
   else
     safety_rc=$?
     if [ "$safety_rc" -eq "$TEARDOWN_WORKTREE_SAFETY_LOCK_BLOCKED" ]; then
+      if [ "$CHECK_ONLY" -eq 1 ]; then
+        echo "REFUSED: teardown check-only cannot inspect $WT without changing a stale git lock; no lock was removed." >&2
+        exit 1
+      fi
       cleanup_stale_lock_for_safety_check "$WT" || exit 1
       validate_worktree_teardown_safety || exit 1
     else
       exit 1
     fi
   fi
+fi
+
+if [ "$CHECK_ONLY" -eq 1 ]; then
+  printf 'teardown check %s safe: no teardown action performed\n' "$ID"
+  exit 0
 fi
 
 # Best-effort: drop the local task branch so the shared repo does not accumulate refs.

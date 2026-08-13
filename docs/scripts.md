@@ -14,6 +14,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-fleet-sync.sh`       | Refresh project clones with safe fast-forwards, self-heals, `STUCK:` reports, branch pruning, and bounded recovery from an orphaned `.git/packed-refs.lock` |
 | `fm-fleet-snapshot.sh`   | Print the read-only structured fleet snapshot JSON (schema `fm-fleet-snapshot.v1`)   |
 | `fm-fleet-view.sh`       | Render the fleet snapshot as a human Markdown view                                   |
+| `fm-fleet-standdown.sh`  | Preflight and cleanly stop subordinate fleet agents before a terminal-layer restart  |
 | `fm-bearings-snapshot.sh` | Project the fleet snapshot to the compact TOON bearings view; local-only unless `--include-prs` |
 | `fm-update.sh`           | Fast-forward-only self-update of firstmate and secondmate homes from origin          |
 | `fm-backlog-handoff.sh`  | Validate and delegate queued backlog-item moves into a secondmate home               |
@@ -100,3 +101,12 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-public-followup-lib.sh` | Shared relay-activation gate, O(1) presence checks, and private transport paths for promised public replies |
 | `fm-public-followup.sh`  | Reconcile typed terminal work results into a public commitment and deliver its final reply once |
 | `fm-public-followup-emit.sh` | Report one typed terminal work result into the home that owes the public reply    |
+
+## Fleet stand-down
+
+Load `/fleet-standdown` before operating this command.
+The skill owns readiness judgment, evidence routing, captain surfacing, and blocker classification, while the script owns deterministic refusal, clean-exit mechanics, and subordinate completion proof.
+After the skill clears its procedure, run `FM_HOME=<firstmate-home> bin/fm-fleet-standdown.sh` from the lock-owning primary firstmate before restarting its terminal layer.
+The command completes a read-only whole-fleet preflight before sending any clean-exit command, refuses mechanically unsafe state, and leaves every persistent home, backlog, registry entry, clone, worktree, data store, state record, backend container, and lock-file byte intact.
+It proves subordinate agent exit and released secondmate locks, reports already-dormant and empty fleets idempotently, never restarts anything, and deliberately leaves the invoking primary alive so it can print the proof before the captain restarts the terminal layer.
+Read the script header for its executable contract, proof boundary, and partial phase-2 failure limit.

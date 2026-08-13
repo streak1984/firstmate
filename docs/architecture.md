@@ -298,6 +298,9 @@ The mechanics are owned by the `/updatefirstmate` skill and firstmate's operatin
 Fleet state lives in each task's session-provider backend (tmux by hard default, herdr or cmux when selected or auto-detected, zellij/orca when explicitly selected), no-mistakes run records, status event logs, local markdown under `data/` including `data/captain.md`, `data/captain-shared.md`, and `data/learnings.md`, and persistent secondmate homes.
 For herdr, respawning after a server-restored layout closes and replaces confirmed no-agent or dead task-tab husks instead of requiring manual tab cleanup.
 At session start, confirmed-dead secondmate agent endpoints are closed and relaunched through the same secondmate spawn path, while ambiguous liveness reads are left untouched to avoid duplicate supervisors.
+Before an intentional terminal-layer restart, `/fleet-standdown` owns the evidence-based readiness judgment and captain surfacing, while `bin/fm-fleet-standdown.sh` owns deterministic refusal and cleanly exits only verified subordinate secondmate agents after one all-read-only preflight.
+The command proves both agent death and semantic lock release while preserving every persistent byte and backend container.
+The invoking primary stays alive through the report because a process cannot both prove its own later death and report afterward; the captain's terminal-layer restart remains a separate, explicitly unproved action, and session start remains the only restart owner.
 Use `/stow` before an intentional reset when the conversation may hold durable knowledge that has not yet been written to disk; after that, the next firstmate session can reconcile and carry on.
 
 ## Development notes

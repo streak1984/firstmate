@@ -13,6 +13,9 @@
 #                                        config/secondmate-harness, or empty when absent.
 #        fm-harness.sh secondmate-effort   print the optional EFFORT token from
 #                                        config/secondmate-harness, or empty when absent.
+#        fm-harness.sh exit-command <harness>
+#                                        print the verified clean-exit command for
+#                                        one supported harness; refuse unknown values.
 # config/secondmate-harness format: a single line "<harness> [<model>] [<effort>]",
 # whitespace-separated. A bare "<harness>" (today's format) behaves exactly as before:
 # harness only, no model/effort. Only the first non-empty, non-comment line is parsed.
@@ -147,10 +150,25 @@ resolve_secondmate_effort() {
   secondmate_field 3
 }
 
+# Exact clean-exit mechanics belong in executable code rather than being copied
+# into every fleet-lifecycle caller. harness-adapters owns the operational
+# knowledge and points here for the command bytes.
+exit_command() {
+  case "${1:-}" in
+    claude|opencode|grok|kimi) printf '/exit\n' ;;
+    codex|pi|pi-signed) printf '/quit\n' ;;
+    *)
+      printf 'error: no verified clean-exit command for harness %s\n' "${1:-<empty>}" >&2
+      return 1
+      ;;
+  esac
+}
+
 case "${1:-}" in
   crew) resolve_crew ;;
   secondmate) resolve_secondmate ;;
   secondmate-model) resolve_secondmate_model ;;
   secondmate-effort) resolve_secondmate_effort ;;
+  exit-command) exit_command "${2:-}" ;;
   *) detect_own ;;
 esac
