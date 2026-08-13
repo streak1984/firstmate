@@ -120,9 +120,6 @@ SH
 fm_session_lock_owned_by_self() { return 0; }
 SH
   cat > "$fake_bin/fm-backend.sh" <<'SH'
-fm_task_id_path_safe() {
-  case "$1" in ''|*[!A-Za-z0-9._-]*) return 1 ;; esac
-}
 fm_meta_get() {
   sed -n "s/^$2=//p" "$1" | tail -1
 }
@@ -212,6 +209,7 @@ else
 fi
 SH
   ln -s "$ROOT/bin/fm-harness.sh" "$fake_bin/fm-harness.sh"
+  ln -s "$ROOT/bin/fm-pr-lib.sh" "$fake_bin/fm-pr-lib.sh"
   chmod +x "$fake_bin/fm-home-seed.sh" "$fake_bin/fm-fleet-snapshot.sh" \
     "$fake_bin/fm-teardown.sh" "$fake_bin/fm-lock.sh"
   printf '%s\n' "$fake_root"
@@ -677,6 +675,58 @@ test_empty_fleet_succeeds_without_action() {
   pass "empty fleet is a successful, explicit, byte-identical no-op"
 }
 
+test_valid_secondmate_id_passes_the_shared_path_safety_check() {
+  local case_dir="$TMP_ROOT/id-safety" main home control snapshot fake_root key out rc
+  main="$case_dir/main"
+  home="$case_dir/secondmate"
+  control="$case_dir/control"
+  snapshot="$control/snapshot.json"
+  mkdir -p "$control"
+  make_main_home "$main"
+  make_secondmate_home "$home" sm-safe.id-1
+  write_secondmate_meta "$main" "$home" sm-safe.id-1
+  idle_secondmate_snapshot "$main" "$home" sm-safe.id-1 > "$snapshot"
+  key=$(printf 'fleet:fm-sm-safe.id-1' | tr '/:' '__')
+  printf 'alive\n' > "$control/$key.agent"
+  fake_root=$(make_fake_root "$case_dir")
+  set +e
+  out=$(run_standdown "$fake_root" "$main" "$snapshot" "$control" env 2>&1)
+  rc=$?
+  set -e
+  expect_code 0 "$rc" "a valid secondmate id must pass the shared path-safety check"
+  assert_not_contains "$out" "unsafe secondmate id" \
+    "a valid id was refused as unsafe, so the safety helper did not resolve"
+  assert_not_contains "$out" "command not found" \
+    "stand-down called a safety function no sourced library provides"
+  assert_contains "$out" "stopped secondmate sm-safe.id-1 cleanly" \
+    "the valid-id fleet did not stand down"
+  pass "a valid id resolves the shared path-safety owner instead of a false refusal"
+}
+
+test_unsafe_secondmate_id_is_refused_by_name() {
+  local case_dir="$TMP_ROOT/id-unsafe" main home control snapshot fake_root out rc
+  main="$case_dir/main"
+  home="$case_dir/secondmate"
+  control="$case_dir/control"
+  snapshot="$control/snapshot.json"
+  mkdir -p "$control"
+  make_main_home "$main"
+  make_secondmate_home "$home" sm-evil
+  idle_secondmate_snapshot "$main" "$home" '../evil' > "$snapshot"
+  fake_root=$(make_fake_root "$case_dir")
+  set +e
+  out=$(run_standdown "$fake_root" "$main" "$snapshot" "$control" env 2>&1)
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "a path-unsafe secondmate id must refuse stand-down"
+  assert_contains "$out" "unsafe secondmate id in fleet snapshot: ../evil" \
+    "the unsafe-id refusal did not name the offending id"
+  assert_not_contains "$out" "command not found" \
+    "the unsafe-id check ran without its safety function resolved"
+  assert_absent "$control/send.log" "an unsafe-id fleet received an exit command"
+  pass "a genuinely unsafe id is still refused through the real safety owner"
+}
+
 test_harness_exit_command_matrix() {
   local harness expected got
   while IFS='|' read -r harness expected; do
@@ -711,6 +761,8 @@ test_stale_metadata_keeps_legitimate_watcher_and_refuses_project_writes
 test_unneeded_live_watcher_is_a_named_leak_and_not_killed
 test_status_only_captain_gate_refuses
 test_empty_fleet_succeeds_without_action
+test_valid_secondmate_id_passes_the_shared_path_safety_check
+test_unsafe_secondmate_id_is_refused_by_name
 test_harness_exit_command_matrix
 
 echo "all fleet stand-down cases passed"

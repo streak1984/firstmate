@@ -98,6 +98,9 @@ fm_refuse_if_gate_agent "$FM_ROOT"
 . "$BIN/fm-wake-lib.sh"
 # shellcheck source=bin/fm-supervision-lib.sh
 . "$BIN/fm-supervision-lib.sh"
+# fm-pr-lib.sh owns fm_task_id_path_safe, the shared task-id path-safety check.
+# shellcheck source=bin/fm-pr-lib.sh
+. "$BIN/fm-pr-lib.sh"
 
 if ! fm_session_lock_owned_by_self "$STATE"; then
   echo "REFUSED: the invoking firstmate does not verifiably own $STATE/.lock; no agent received an exit command." >&2
