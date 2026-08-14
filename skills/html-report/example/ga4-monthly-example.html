@@ -229,6 +229,15 @@ tbody tr:hover { background: rgba(11, 11, 11, 0.03); }
       format: "int",
       valueLabels: true,
     },
+    conversionsByChannel: {
+      type: "bar",
+      horizontal: true,
+      xLabel: "Channel",
+      labels: ["Organic search", "Paid search", "Direct", "Referral", "Email", "Social"],
+      series: [{ name: "Conversions", values: [5130, 2890, 2120, 990, 980, 370] }],
+      format: "int",
+      valueLabels: true,
+    },
   },
 
   tables: {
@@ -249,6 +258,38 @@ tbody tr:hover { background: rgba(11, 11, 11, 0.03); }
         { page: "/kontakt", sessions: 9150, users: 7900, conversions: 310, rate: 3.4 },
       ],
     },
+    /* Pages that lost sessions year over year, sorted by sessions lost.
+       Delta columns render signed, colored values. */
+    decliningPages: {
+      columns: [
+        { key: "page", label: "Page" },
+        { key: "sessions", label: "Sessions", format: "int" },
+        { key: "sessionsChange", label: "Sessions change", delta: { upIsGood: true, format: "int" } },
+        { key: "conversions", label: "Conversions", format: "int" },
+        { key: "conversionsChange", label: "Conversions change", delta: { upIsGood: true, format: "int" } },
+      ],
+      rows: [
+        { page: "/blogg/digital-markedsforing", sessions: 8240, sessionsChange: -3660, conversions: 310, conversionsChange: -110 },
+        { page: "/blogg/seo-tips", sessions: 6850, sessionsChange: -2050, conversions: 240, conversionsChange: -90 },
+        { page: "/kalkulator", sessions: 5120, sessionsChange: -1280, conversions: 180, conversionsChange: -80 },
+      ],
+    },
+    /* Key events: their counts sum to the 12 480 conversions in the KPI row.
+       Rate = event count / sessions. */
+    events: {
+      columns: [
+        { key: "event", label: "Key event" },
+        { key: "count", label: "Count", format: "int" },
+        { key: "change", label: "Change", delta: { upIsGood: true, format: "pct" } },
+        { key: "rate", label: "Conversion rate", format: "pct" },
+      ],
+      rows: [
+        { event: "form_submit", count: 6420, change: 14.8, rate: 2.2 },
+        { event: "signup", count: 4180, change: 18.2, rate: 1.4 },
+        { event: "contact_click", count: 1250, change: 3.1, rate: 0.4 },
+        { event: "file_download", count: 630, change: -15.3, rate: 0.2 },
+      ],
+    },
   },
 };
 </script>
@@ -257,7 +298,7 @@ tbody tr:hover { background: rgba(11, 11, 11, 0.03); }
     <!-- Summary narrative block: 2-4 sentences on what the report shows. -->
     <section class="section">
       <h2>Summary</h2>
-      <p>Sessions grew 8,3 % year over year in the first half of 2026, driven mainly by organic search and email. Conversions grew faster than traffic at 12,6 %, lifting the conversion rate to 4,2 %. All figures in this report are fictional sample data for demonstration.</p>
+      <p>Sessions grew 8,3 % year over year in the first half of 2026, driven mainly by organic search and email. Conversions grew faster than traffic at 12,6 %, lifting the conversion rate to 4,2 %. The one notable move in the event mix: product-sheet downloads fell 15,3 %. All figures in this report are fictional sample data for demonstration.</p>
     </section>
 
     <!-- KPI tile row; tiles are rendered from REPORT_DATA.kpis. -->
@@ -305,10 +346,32 @@ tbody tr:hover { background: rgba(11, 11, 11, 0.03); }
       <p>The six most visited landing pages account for about 79 % of all sessions. The pricing page converts best at 5,1 %, while the contact page trails at 3,4 %.</p>
       <div class="table-scroll table-card" data-table-spec="landingPages"></div>
     </section>
+
+    <section class="section">
+      <h2>Declining pages</h2>
+      <p>Three pages lost sessions year over year while the site overall grew. /blogg/digital-markedsforing dropped 3 660 sessions and /blogg/seo-tips 2 050 - check content age and whether both lost rankings. /kalkulator lost 1 280 sessions and its conversions fell with them: check whether the calculator-to-pricing funnel step still works.</p>
+      <div class="table-scroll table-card" data-table-spec="decliningPages"></div>
+    </section>
+
+    <section class="section">
+      <h2>Events and conversions</h2>
+      <p>This report defines conversion as the four key events below; their counts sum to the 12 480 conversions in the KPI row. Signups grew fastest at +18,2 %, while product-sheet downloads fell 15,3 % - the one notable move: check whether the download links or the sheets themselves changed. Form submits remain the largest conversion event at 6 420.</p>
+      <div class="table-scroll table-card" data-table-spec="events"></div>
+      <figure class="chart-figure">
+        <div class="chart-frame">
+          <canvas data-spec="conversionsByChannel" role="img" aria-label="Bar chart of conversions by acquisition channel"></canvas>
+        </div>
+        <figcaption>Conversions by acquisition channel, January - June 2026. Organic search delivers 5 130 conversions; email converts 4,4 % of its sessions, nearly double social's 2,6 %.</figcaption>
+        <details class="table-fallback" data-table-spec="conversionsByChannel">
+          <summary>View as table</summary>
+          <div class="table-scroll" data-table-target></div>
+        </details>
+      </figure>
+    </section>
   </main>
 
   <footer class="report-footer">
-    <p class="footnotes">Method: conversion rate = conversions / sessions. Figures are fictional sample data for demonstration only and do not represent real Google Analytics traffic. No sampling corrections applied.</p>
+    <p class="footnotes">Method: conversion rate = conversions / sessions; per-event rate = event count / sessions. Figures are fictional sample data for demonstration only and do not represent real Google Analytics traffic. No sampling corrections applied.</p>
     <p class="generated">Generated <span id="report-generated"></span></p>
   </footer>
 
