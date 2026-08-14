@@ -529,7 +529,7 @@ tbody tr:hover { background: rgba(11, 11, 11, 0.03); }
         var up = k.delta > 0, down = k.delta < 0;
         var good = up === !!k.upIsGood;
         delta.className = "kpi-delta " + (up || down ? (good ? "good" : "bad") : "neutral");
-        delta.textContent = (up ? "▲ " : down ? "▼ " : "") + (up ? "+" : "") + fmFormat(Math.abs(k.delta), k.deltaFormat || "pct");
+        delta.textContent = (up ? "▲ +" : down ? "▼ -" : "") + fmFormat(Math.abs(k.delta), k.deltaFormat || "pct");
         tile.appendChild(delta);
       }
       row.appendChild(tile);

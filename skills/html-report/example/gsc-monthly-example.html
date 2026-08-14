@@ -176,7 +176,7 @@ tbody tr:hover { background: rgba(11, 11, 11, 0.03); }
     <p class="report-subtitle" id="report-subtitle"></p>
     <p class="report-meta" id="report-meta"></p>
     <p class="report-source" id="report-source"></p>
-    <!-- Optional agent-written note, e.g. a "sample data" disclaimer. Delete when unused. -->
+    <p class="notice">Sample report - all figures are fictional and shown for demonstration only</p>
   </header>
 
   <!-- ══════════════════════════════════════════════════════════════════════
@@ -189,85 +189,94 @@ tbody tr:hover { background: rgba(11, 11, 11, 0.03); }
        ══════════════════════════════════════════════════════════════════════ -->
   <script>
     const REPORT_DATA = {
-      /* Header and footer text. Delete "generated" to auto-fill today's date. */
-      meta: {
-        title: "Report title",
-        subtitle: "One-line subtitle for the report",
-        dateRange: "1 January - 31 March 2026",
-        dataSource: "Google Analytics 4 export",
-        generated: "1 April 2026",
-      },
+  meta: {
+    title: "H1 2026 search performance",
+    subtitle: "Google Search Console - clicks, impressions and rankings",
+    dateRange: "1 January - 30 June 2026",
+    dataSource: "Google Search Console (fictional sample data)",
+    generated: "14 July 2026",
+  },
 
-      /* The KPI tile row: value, label, optional signed delta.
-         format: "int" (12 345), "pct" (4,2 %), "pp" (0,2 pp), "compact" (1,2 mill.).
-         upIsGood: whether a rising delta counts as positive (false for e.g. cost
-         or average position, where lower is better).
-         deltaFormat defaults to "pct". */
-      kpis: [
-        { label: "Sessions", value: 12345, delta: 8.4, deltaFormat: "pct", upIsGood: true },
-        { label: "Users", value: 9876, delta: 5.1, deltaFormat: "pct", upIsGood: true },
-        { label: "Conversions", value: 512, delta: 12.6, deltaFormat: "pct", upIsGood: true },
-        { label: "Conversion rate", value: 4.2, format: "pct", delta: 0.2, deltaFormat: "pp", upIsGood: true },
+  kpis: [
+    { label: "Clicks", value: 26120, delta: 17.4, deltaFormat: "pct", upIsGood: true },
+    { label: "Impressions", value: 812540, delta: 6.8, deltaFormat: "pct", upIsGood: true },
+    { label: "CTR", value: 3.2, format: "pct", delta: 0.3, deltaFormat: "pp", upIsGood: true },
+    /* Average position: lower is better, so upIsGood is false - a negative
+       change renders as a green downward arrow (improvement). */
+    { label: "Avg. position", value: 14.8, format: "int", delta: -1.4, deltaFormat: "int", upIsGood: false },
+  ],
+
+  charts: {
+    /* Clicks and impressions live on different scales (impressions run
+       ~25x clicks): two separate charts, never a dual-axis chart. */
+    clicksOverTime: {
+      type: "line",
+      xLabel: "Month",
+      labels: ["Jan", "Feb", "Mar", "Apr", "May", "Jun"],
+      series: [
+        { name: "2026", values: [3210, 3640, 4120, 4380, 5010, 5760] },
+        { name: "2025", values: [2890, 3120, 3560, 3710, 4260, 4710], color: "deemph" },
       ],
+      format: "int",
+      points: true,
+    },
+    impressionsOverTime: {
+      type: "line",
+      xLabel: "Month",
+      labels: ["Jan", "Feb", "Mar", "Apr", "May", "Jun"],
+      series: [
+        { name: "2026", values: [118400, 126800, 131500, 138900, 145200, 151740] },
+        { name: "2025", values: [112600, 119800, 124900, 129400, 133800, 140300], color: "deemph" },
+      ],
+      format: "int",
+      points: true,
+    },
+  },
 
-      /* Chart specs. Each key below is referenced by a canvas[data-spec] in
-         the body; add a chart by adding a spec here plus one canvas element.
-         Supported types: "line" (2px lines; points: true draws >=8px markers
-         with a surface ring; area: true adds a 10% wash), "bar" (<=24px bars,
-         rounded data end, square baseline; horizontal: true for horizontal
-         bars; valueLabels: true draws the value at the bar tip).
-         series[i].color: "deemph" renders that series in de-emphasis gray
-         (use for context series when one series is the point).
-         Max 8 categorical series; fold the 9th into "Other". */
-      charts: {
-        example: {
-          type: "line",
-          xLabel: "Month",
-          labels: ["Jan", "Feb", "Mar", "Apr", "May", "Jun"],
-          series: [
-            { name: "2026", values: [42810, 45120, 51428, 47330, 52640, 55190] },
-            { name: "2025", values: [39200, 41500, 47300, 43800, 48900, 51200], color: "deemph" },
-          ],
-          format: "int",
-          points: true,
-        },
-        /* Bar chart example - uncomment and wire a canvas to use it.
-        exampleBar: {
-          type: "bar",
-          horizontal: true,
-          xLabel: "Channel",
-          labels: ["Organic search", "Paid search", "Direct"],
-          series: [{ name: "Sessions", values: [118400, 61200, 41800] }],
-          format: "int",
-          valueLabels: true,
-        },
-        */
-      },
-
-      /* Standalone data tables (not chart fallbacks). Columns and rows are
-         plain data; numeric columns take a format and render right-aligned
-         with tabular figures. */
-      tables: {
-        exampleTable: {
-          columns: [
-            { key: "page", label: "Landing page" },
-            { key: "sessions", label: "Sessions", format: "int" },
-            { key: "rate", label: "Conversion rate", format: "pct" },
-          ],
-          rows: [
-            { page: "/", sessions: 12345, rate: 4.4 },
-            { page: "/example", sessions: 5432, rate: 3.9 },
-          ],
-        },
-      },
-    };
-  </script>
+  tables: {
+    topQueries: {
+      columns: [
+        { key: "query", label: "Query" },
+        { key: "clicks", label: "Clicks", format: "int" },
+        { key: "impressions", label: "Impressions", format: "int" },
+        { key: "ctr", label: "CTR", format: "pct" },
+        { key: "position", label: "Position", format: "int" },
+      ],
+      rows: [
+        { query: "prisliste", clicks: 2140, impressions: 8900, ctr: 24.0, position: 3.2 },
+        { query: "ga4 rapport", clicks: 1860, impressions: 12400, ctr: 15.0, position: 5.1 },
+        { query: "google analytics 4", clicks: 1520, impressions: 21300, ctr: 7.1, position: 8.4 },
+        { query: "konverteringsrate", clicks: 980, impressions: 6200, ctr: 15.8, position: 4.7 },
+        { query: "landing page mal", clicks: 810, impressions: 5400, ctr: 15.0, position: 6.2 },
+        { query: "search console", clicks: 640, impressions: 9800, ctr: 6.5, position: 11.3 },
+      ],
+    },
+    topPages: {
+      columns: [
+        { key: "page", label: "Page" },
+        { key: "clicks", label: "Clicks", format: "int" },
+        { key: "impressions", label: "Impressions", format: "int" },
+        { key: "ctr", label: "CTR", format: "pct" },
+        { key: "position", label: "Position", format: "int" },
+      ],
+      rows: [
+        { page: "/priser", clicks: 3420, impressions: 14100, ctr: 24.3, position: 3.1 },
+        { page: "/", clicks: 2980, impressions: 18600, ctr: 16.0, position: 5.4 },
+        { page: "/produkter", clicks: 2610, impressions: 16300, ctr: 16.0, position: 4.8 },
+        { page: "/blogg/ga4-migrering", clicks: 1940, impressions: 9700, ctr: 20.0, position: 3.9 },
+        { page: "/om-oss", clicks: 1120, impressions: 6400, ctr: 17.5, position: 6.6 },
+        { page: "/kontakt", clicks: 640, impressions: 3900, ctr: 16.4, position: 7.2 },
+      ],
+    },
+  },
+};
+</script>
 
   <main>
     <!-- Summary narrative block: 2-4 sentences on what the report shows. -->
     <section class="section">
       <h2>Summary</h2>
-      <p>Write 2-4 sentences summarizing the report here: the headline movement, the driver behind it, and one caveat if there is one.</p>
+      <p>Clicks grew 17,4 % year over year in the first half of 2026, while impressions grew a slower 6,8 %, so the click-through rate improved to 3,2 %. Average position improved from 16,2 to 14,8. All figures in this report are fictional sample data for demonstration.</p>
     </section>
 
     <!-- KPI tile row; tiles are rendered from REPORT_DATA.kpis. -->
@@ -278,14 +287,30 @@ tbody tr:hover { background: rgba(11, 11, 11, 0.03); }
          always matches the chart. Duplicate this section for more charts;
          delete it if you do not need a chart. -->
     <section class="section">
-      <h2>Sessions over time</h2>
-      <p>Write 1-3 sentences of narrative here: what the reader should see in the chart, and what it means.</p>
+      <h2>Clicks over time</h2>
+      <p>Clicks rose in every month of the half and outpaced last year throughout. The strongest month was June with 5 760 clicks, up 22 % from June last year.</p>
       <figure class="chart-figure">
         <div class="chart-frame">
-          <canvas data-spec="example" role="img" aria-label="Line chart of sessions over time"></canvas>
+          <canvas data-spec="clicksOverTime" role="img" aria-label="Line chart of clicks over time"></canvas>
         </div>
-        <figcaption>Short caption for the chart, e.g. the unit and period.</figcaption>
-        <details class="table-fallback" data-table-spec="example">
+        <figcaption>Monthly clicks, January - June 2026 vs 2025.</figcaption>
+        <details class="table-fallback" data-table-spec="clicksOverTime">
+          <summary>View as table</summary>
+          <div class="table-scroll" data-table-target></div>
+        </details>
+      </figure>
+    </section>
+
+    <!-- Clicks and impressions are different scales (~25x): two separate charts, never a dual-axis chart. -->
+    <section class="section">
+      <h2>Impressions over time</h2>
+      <p>Impressions grew steadily month over month, a modest 6,8 % gain over the same period last year. Because impressions run about 25 times the clicks scale, the two measures are shown as separate charts rather than one dual-axis chart.</p>
+      <figure class="chart-figure">
+        <div class="chart-frame">
+          <canvas data-spec="impressionsOverTime" role="img" aria-label="Line chart of impressions over time"></canvas>
+        </div>
+        <figcaption>Monthly impressions, January - June 2026 vs 2025.</figcaption>
+        <details class="table-fallback" data-table-spec="impressionsOverTime">
           <summary>View as table</summary>
           <div class="table-scroll" data-table-target></div>
         </details>
@@ -295,14 +320,21 @@ tbody tr:hover { background: rgba(11, 11, 11, 0.03); }
     <!-- Data-table section pattern: heading + short prose + a table card.
          The table is rendered from REPORT_DATA.tables. Delete when unused. -->
     <section class="section">
-      <h2>Top landing pages</h2>
-      <p>Write 1-3 sentences of narrative here about what the table shows.</p>
-      <div class="table-scroll table-card" data-table-spec="exampleTable"></div>
+      <h2>Top queries</h2>
+      <p>The pricing query "prisliste" drives the most clicks at 2 140 and ranks 3,2, while "google analytics 4" earns the most impressions at 21 300. The best-converting query is "prisliste" at 24,0 % CTR.</p>
+      <div class="table-scroll table-card" data-table-spec="topQueries"></div>
+    <!-- Second data-table section: top pages, same column shape as queries. -->
+    <section class="section">
+      <h2>Top pages</h2>
+      <p>The pricing page earns the most search clicks at 3 420 and holds the best average position at 3,1. The homepage ranks well but trails the pricing page on click-through.</p>
+      <div class="table-scroll table-card" data-table-spec="topPages"></div>
+    </section>
+
     </section>
   </main>
 
   <footer class="report-footer">
-    <p class="footnotes">Method notes: state how the figures were computed (for example conversion rate = conversions / sessions), which filters were applied, and any caveats.</p>
+    <p class="footnotes">Method: CTR = clicks / impressions. Average position is a rank where lower is better. Figures are fictional sample data for demonstration only and do not represent real Google Search Console traffic. No sampling corrections applied.</p>
     <p class="generated">Generated <span id="report-generated"></span></p>
   </footer>
 

@@ -12,7 +12,9 @@ The result renders fully from `file://` and is safe to email or drop in a shared
 ## Files
 
 - `template.html` - the report scaffold: header, KPI tiles, chart sections, data-table sections, footer, CSS design tokens, and the inlined Chart.js build.
-- `example/ga4-monthly-example.html` - the template genuinely filled with fictional GA4-shaped sample data; copy its patterns when in doubt.
+- `example/ga4-monthly-example.html` - a filled GA4 traffic-and-conversion report: KPI tiles, a two-series line chart (this period vs previous, with the context series de-emphasized), a horizontal channel bar chart with value-at-tip labels, and a landing-pages table.
+- `example/gsc-monthly-example.html` - a filled Google Search Console search-performance report: KPI tiles with inverted delta semantics on average position (lower is better, so a negative change renders as a green downward arrow), clicks and impressions as two separate charts because their scales differ (never a dual-axis chart), and top-queries plus top-pages tables.
+Copy the example whose shape matches your data, then delete the sections you do not need.
 - `assets/chart.umd.js` - the vendored Chart.js UMD build, byte-identical to the copy inlined in `template.html`.
 - `assets/LICENSE.md` and `assets/VERSION` - the Chart.js MIT license and the exact version and source URL.
 
@@ -39,7 +41,7 @@ Every report-specific number lives in `REPORT_DATA`; the header, KPI tiles, char
 - `meta` - `title`, `subtitle`, `dateRange`, `dataSource`, optional `generated` (delete `generated` to auto-fill today's date).
 - `kpis` - array of `{label, value, delta?, deltaFormat?, format?, upIsGood?}`.
   `format` is `"int"` (12 345), `"pct"` (4,2 %), `"pp"` (0,2 pp), or `"compact"` (1,2 mill.); `deltaFormat` defaults to `"pct"`.
-  `upIsGood` says whether a rising delta is positive (false for example for cost); deltas always render with an arrow glyph plus sign, never color alone.
+  `upIsGood` says whether a rising delta is positive (false for example for cost or average position, where lower is better); deltas always render with an arrow glyph plus sign, never color alone.
 - `charts` - map of spec key to chart spec: `{type, xLabel, labels, series, format, points?, horizontal?, valueLabels?, area?, beginAtZero?}`.
   `series` is `[{name, values}]`, max 8 entries; series names must be unique.
   `series[i].color: "deemph"` renders that series in de-emphasis gray - use it when one series is the point and the rest are context.
