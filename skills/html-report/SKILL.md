@@ -96,7 +96,8 @@ Sequential default hue is blue, light to dark: `#cde2fb`, `#b7d3f6`, `#9ec5f4`, 
 For an ordinal ramp (funnel stages, tiers), start no lighter than step `#86b6ef` so the lightest step still clears 2:1 on the surface.
 The diverging pair is blue `#2a78d6` to red `#e34948` with neutral gray `#f0efec` as the midpoint, equal step count per arm.
 Status colors (fixed, never themed): good `#0ca30c`, warning `#fab219`, serious `#ec835a`, critical `#d03b3b`; delta text uses `#006300` for good and `#d03b3b` for bad.
-Surfaces: page plane `#f9f9f7`, chart surface `#fcfcfb`, primary ink `#0b0b0b`, secondary ink `#52514e`, muted `#898781`, gridline `#e1e0d9`, baseline `#c3c2b7`, border `rgba(11, 11, 11, 0.10)`.
+Surfaces: page plane `#f9f9f7`, chart surface `#fcfcfb`, primary ink `#0b0b0b`, secondary ink `#52514e`, muted `#6f6e69`, gridline `#e1e0d9`, baseline `#c3c2b7`, border `rgba(11, 11, 11, 0.10)`.
+The muted token clears 4.5:1 against both surfaces so small gray text (date range, source line, captions, footer) stays readable; keep it at or darker than `#6f6e69` if you change it.
 
 Mark and layout rules:
 
@@ -110,6 +111,7 @@ Mark and layout rules:
 - Numbers use Norwegian formatting - space as thousands separator, comma as decimal - via `Intl` `nb-NO`; always through a `format` field, never hand-formatted.
 - KPI tile values use proportional figures; only columns of numbers that must align (table cells, axis ticks) use `tabular-nums`.
 - The page is a centered ~960px column and never scrolls horizontally; wide tables scroll inside their own container.
+- Reports are desktop-optimized, light theme only: no mobile or tablet layout work, and no responsive effort beyond not breaking.
 - Light theme only: the body background is painted explicitly so the page stays light regardless of the reader's OS theme.
 
 ## What the template does for you
