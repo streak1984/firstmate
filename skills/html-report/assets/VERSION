@@ -1,0 +1,5 @@
+Chart.js v4.5.1
+Source: https://registry.npmjs.org/chart.js/-/chart.js-4.5.1.tgz (npm package chart.js, file dist/chart.umd.js)
+License: MIT - see assets/LICENSE.md
+Vendored: 2026-08-14
+The template inlines this exact file byte-for-byte in the marked Chart.js script block.

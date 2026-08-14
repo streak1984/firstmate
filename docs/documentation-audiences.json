@@ -364,6 +364,14 @@
       "audience": "public-product"
     },
     {
+      "path": "skills/html-report/SKILL.md",
+      "audience": "public-product"
+    },
+    {
+      "path": "skills/html-report/assets/LICENSE.md",
+      "audience": "public-product"
+    },
+    {
       "path": "skills/create-verification-skill/SKILL.md",
       "audience": "public-product"
     },
