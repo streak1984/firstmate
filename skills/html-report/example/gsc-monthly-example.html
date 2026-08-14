@@ -143,6 +143,10 @@ tbody tr:last-child td, tbody tr:last-child th { border-bottom: none; }
 /* Numeric cells: right-aligned with tabular figures so columns line up. */
 th.num, td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 tbody tr:hover { background: rgba(11, 11, 11, 0.03); }
+/* Signed delta cells in tables: reserved good/bad colors, never color alone. */
+.table-card td.delta.good { color: var(--good); }
+.table-card td.delta.bad { color: var(--bad); }
+.table-card td.delta.neutral { color: var(--ink-2); }
 
 /* ── Footer ─────────────────────────────────────────────────────────────── */
 .report-footer {
@@ -231,24 +235,81 @@ tbody tr:hover { background: rgba(11, 11, 11, 0.03); }
       format: "int",
       points: true,
     },
+    /* Branded vs non-branded share: proportional bars, one series, no legend. */
+    brandSplit: {
+      type: "bar",
+      horizontal: true,
+      xLabel: "Query type",
+      labels: ["Branded", "Non-branded"],
+      series: [{ name: "2026 clicks", values: [17700, 8420] }],
+      format: "int",
+      valueLabels: true,
+    },
   },
 
   tables: {
-    topQueries: {
+    /* The split's exact numbers: share and period-over-period change. */
+    brandSplitTable: {
+      columns: [
+        { key: "segment", label: "Segment" },
+        { key: "clicks", label: "Clicks", format: "int" },
+        { key: "share", label: "Share of clicks", format: "pct" },
+        { key: "change", label: "Change vs H1 2025", delta: { upIsGood: true, format: "pct" } },
+      ],
+      rows: [
+        { segment: "Branded", clicks: 17700, share: 67.8, change: 6.1 },
+        { segment: "Non-branded", clicks: 8420, share: 32.2, change: 51.2 },
+      ],
+    },
+    /* Delta columns render signed, colored values; position change uses
+       upIsGood: false so a falling position shows as good. */
+    improvements: {
       columns: [
         { key: "query", label: "Query" },
         { key: "clicks", label: "Clicks", format: "int" },
+        { key: "clicksChange", label: "Clicks change", delta: { upIsGood: true, format: "int" } },
+        { key: "position", label: "Position", format: "int" },
+        { key: "positionChange", label: "Position change", delta: { upIsGood: false, format: "int" } },
+      ],
+      rows: [
+        { query: "webanalyse", clicks: 1860, clicksChange: 1240, position: 4.1, positionChange: -2.2 },
+        { query: "nordlys app", clicks: 2140, clicksChange: 980, position: 2.4, positionChange: -0.7 },
+        { query: "konverteringsrate", clicks: 980, clicksChange: 640, position: 4.7, positionChange: -3.5 },
+        { query: "ga4 rapport", clicks: 1860, clicksChange: 520, position: 5.1, positionChange: -0.3 },
+        { query: "landing page mal", clicks: 810, clicksChange: 410, position: 6.2, positionChange: -1.6 },
+        { query: "prisliste", clicks: 2140, clicksChange: 380, position: 3.2, positionChange: -0.3 },
+      ],
+    },
+    drops: {
+      columns: [
+        { key: "query", label: "Query" },
+        { key: "clicks", label: "Clicks", format: "int" },
+        { key: "clicksChange", label: "Clicks change", delta: { upIsGood: true, format: "int" } },
+        { key: "position", label: "Position", format: "int" },
+        { key: "positionChange", label: "Position change", delta: { upIsGood: false, format: "int" } },
+      ],
+      rows: [
+        { query: "google analytics hjelp", clicks: 1120, clicksChange: -1540, position: 11.3, positionChange: 7.5 },
+        { query: "seo tips", clicks: 880, clicksChange: -720, position: 9.2, positionChange: 3.6 },
+        { query: "ga4 migrering", clicks: 1240, clicksChange: -480, position: 6.4, positionChange: 1.2 },
+        { query: "konkurrentanalyse", clicks: 420, clicksChange: -310, position: 8.7, positionChange: 0.8 },
+        { query: "markedsforing kurs", clicks: 510, clicksChange: -260, position: 12.4, positionChange: 2.6 },
+        { query: "datadrevet markedsforing", clicks: 690, clicksChange: -230, position: 5.9, positionChange: 0.4 },
+      ],
+    },
+    /* Striking distance: positions 4-15, high impressions, low CTR. */
+    opportunities: {
+      columns: [
+        { key: "query", label: "Query" },
         { key: "impressions", label: "Impressions", format: "int" },
         { key: "ctr", label: "CTR", format: "pct" },
         { key: "position", label: "Position", format: "int" },
+        { key: "page", label: "Landing page" },
       ],
       rows: [
-        { query: "prisliste", clicks: 2140, impressions: 8900, ctr: 24.0, position: 3.2 },
-        { query: "ga4 rapport", clicks: 1860, impressions: 12400, ctr: 15.0, position: 5.1 },
-        { query: "google analytics 4", clicks: 1520, impressions: 21300, ctr: 7.1, position: 8.4 },
-        { query: "konverteringsrate", clicks: 980, impressions: 6200, ctr: 15.8, position: 4.7 },
-        { query: "landing page mal", clicks: 810, impressions: 5400, ctr: 15.0, position: 6.2 },
-        { query: "search console", clicks: 640, impressions: 9800, ctr: 6.5, position: 11.3 },
+        { query: "ga4 dashboards", impressions: 28400, ctr: 2.1, position: 6.8, page: "/blogg/ga4-dashboards" },
+        { query: "digital markedsforing", impressions: 19600, ctr: 1.8, position: 9.4, page: "/blogg/digital-markedsforing" },
+        { query: "webanalyse verktoy", impressions: 15800, ctr: 2.4, position: 7.1, page: "/webanalyse" },
       ],
     },
     topPages: {
@@ -258,14 +319,16 @@ tbody tr:hover { background: rgba(11, 11, 11, 0.03); }
         { key: "impressions", label: "Impressions", format: "int" },
         { key: "ctr", label: "CTR", format: "pct" },
         { key: "position", label: "Position", format: "int" },
+        { key: "clicksChange", label: "Clicks change", delta: { upIsGood: true, format: "int" } },
       ],
       rows: [
-        { page: "/priser", clicks: 3420, impressions: 14100, ctr: 24.3, position: 3.1 },
-        { page: "/", clicks: 2980, impressions: 18600, ctr: 16.0, position: 5.4 },
-        { page: "/produkter", clicks: 2610, impressions: 16300, ctr: 16.0, position: 4.8 },
-        { page: "/blogg/ga4-migrering", clicks: 1940, impressions: 9700, ctr: 20.0, position: 3.9 },
-        { page: "/om-oss", clicks: 1120, impressions: 6400, ctr: 17.5, position: 6.6 },
-        { page: "/kontakt", clicks: 640, impressions: 3900, ctr: 16.4, position: 7.2 },
+        { page: "/priser", clicks: 3420, impressions: 14100, ctr: 24.3, position: 3.1, clicksChange: 410 },
+        { page: "/", clicks: 2980, impressions: 18600, ctr: 16.0, position: 5.4, clicksChange: 120 },
+        { page: "/produkter", clicks: 2610, impressions: 16300, ctr: 16.0, position: 4.8, clicksChange: -310 },
+        { page: "/blogg/ga4-migrering", clicks: 1940, impressions: 9700, ctr: 20.0, position: 3.9, clicksChange: -480 },
+        { page: "/blogg/google-analytics-hjelp", clicks: 1120, impressions: 8400, ctr: 13.3, position: 11.3, clicksChange: -1540 },
+        { page: "/om-oss", clicks: 1120, impressions: 6400, ctr: 17.5, position: 6.6, clicksChange: 60 },
+        { page: "/kontakt", clicks: 640, impressions: 3900, ctr: 16.4, position: 7.2, clicksChange: -20 },
       ],
     },
   },
@@ -276,7 +339,7 @@ tbody tr:hover { background: rgba(11, 11, 11, 0.03); }
     <!-- Summary narrative block: 2-4 sentences on what the report shows. -->
     <section class="section">
       <h2>Summary</h2>
-      <p>Clicks grew 17,4 % year over year in the first half of 2026, while impressions grew a slower 6,8 %, so the click-through rate improved to 3,2 %. Average position improved from 16,2 to 14,8. All figures in this report are fictional sample data for demonstration.</p>
+      <p>Organic clicks grew 17,4 % year over year, driven almost entirely by non-branded queries (+51,2 %), while branded clicks grew a steady 6,1 %. Average position improved from 16,2 to 14,8. Priorities for the next cycle: investigate the dramatic drop for "google analytics hjelp" (-1 540 clicks), then capture the three striking-distance opportunities. All figures are fictional sample data for demonstration.</p>
     </section>
 
     <!-- KPI tile row; tiles are rendered from REPORT_DATA.kpis. -->
@@ -288,7 +351,7 @@ tbody tr:hover { background: rgba(11, 11, 11, 0.03); }
          delete it if you do not need a chart. -->
     <section class="section">
       <h2>Clicks over time</h2>
-      <p>Clicks rose in every month of the half and outpaced last year throughout. The strongest month was June with 5 760 clicks, up 22 % from June last year.</p>
+      <p>Clicks rose in every month of the half and outpaced last year throughout. The strongest month was June with 5 760 clicks, up 22 % from June last year, and the curve matches the non-branded gains described below.</p>
       <figure class="chart-figure">
         <div class="chart-frame">
           <canvas data-spec="clicksOverTime" role="img" aria-label="Line chart of clicks over time"></canvas>
@@ -317,16 +380,43 @@ tbody tr:hover { background: rgba(11, 11, 11, 0.03); }
       </figure>
     </section>
 
+    <section class="section">
+      <h2>Branded vs non-branded</h2>
+      <p>Branded queries are those containing "nordlys", the fictional brand; everything else is non-branded. Branded queries drive 67,8 % of clicks and grew 6,1 %: they track brand demand. Non-branded queries grew 51,2 % and represent real SEO growth - this is where ranking, content, and on-page work pay off, so growth effort targets this half.</p>
+      <figure class="chart-figure">
+        <div class="chart-frame">
+          <canvas data-spec="brandSplit" role="img" aria-label="Bar chart of clicks by branded and non-branded queries"></canvas>
+        </div>
+        <figcaption>Clicks by query type, January - June 2026.</figcaption>
+        <details class="table-fallback" data-table-spec="brandSplit">
+          <summary>View as table</summary>
+          <div class="table-scroll" data-table-target></div>
+        </details>
+      </figure>
+      <div class="table-scroll table-card" data-table-spec="brandSplitTable"></div>
+    </section>
+
     <!-- Data-table section pattern: heading + short prose + a table card.
          The table is rendered from REPORT_DATA.tables. Delete when unused. -->
     <section class="section">
-      <h2>Top queries</h2>
-      <p>The pricing query "prisliste" drives the most clicks at 2 140 and ranks 3,2, while "google analytics 4" earns the most impressions at 21 300. The best-converting query is "prisliste" at 24,0 % CTR.</p>
-      <div class="table-scroll table-card" data-table-spec="topQueries"></div>
-    <!-- Second data-table section: top pages, same column shape as queries. -->
+      <h2>Biggest improvements</h2>
+      <p>Every improving query also improved its average position, and the pattern is consistent: the ranking gain came first, clicks followed. "webanalyse" added 1 240 clicks after moving from position 6,3 to 4,1. Keep the pages behind these queries current to hold the gains.</p>
+      <div class="table-scroll table-card" data-table-spec="improvements"></div>
+    <section class="section">
+      <h2>Biggest drops</h2>
+      <p>"google analytics hjelp" lost 1 540 clicks as its position fell from 3,8 to 11,3 - the dramatic drop to investigate first. Check for a lost ranking, a SERP feature such as an AI overview taking the slot, or stale content on the target page. The smaller drops cluster around informational queries and may be seasonal.</p>
+      <div class="table-scroll table-card" data-table-spec="drops"></div>
+    </section>
+
+    <section class="section">
+      <h2>Striking-distance opportunities</h2>
+      <p>Three queries rank just outside the top results with high impressions but weak click-through. "ga4 dashboards" shows 28 400 impressions at position 6,8 - a top-3 position would convert a meaningful share of those into clicks. Refresh the target pages, strengthen internal links, and re-measure next month.</p>
+      <div class="table-scroll table-card" data-table-spec="opportunities"></div>
+    </section>
+
     <section class="section">
       <h2>Top pages</h2>
-      <p>The pricing page earns the most search clicks at 3 420 and holds the best average position at 3,1. The homepage ranks well but trails the pricing page on click-through.</p>
+      <p>The help article /blogg/google-analytics-hjelp lost the most clicks of any page, matching its query drop, and /produkter is declining too (-310). Prioritize these two pages for review before touching the improving ones.</p>
       <div class="table-scroll table-card" data-table-spec="topPages"></div>
     </section>
 
@@ -334,7 +424,7 @@ tbody tr:hover { background: rgba(11, 11, 11, 0.03); }
   </main>
 
   <footer class="report-footer">
-    <p class="footnotes">Method: CTR = clicks / impressions. Average position is a rank where lower is better. Figures are fictional sample data for demonstration only and do not represent real Google Search Console traffic. No sampling corrections applied.</p>
+    <p class="footnotes">Method: CTR = clicks / impressions. Average position is a rank where lower is better. Branded queries are those containing "nordlys"; all others are non-branded. Figures are fictional sample data for demonstration only and do not represent real Google Search Console traffic. No sampling corrections applied.</p>
     <p class="generated">Generated <span id="report-generated"></span></p>
   </footer>
 
@@ -402,7 +492,8 @@ tbody tr:hover { background: rgba(11, 11, 11, 0.03); }
     return nf.format(value);
   }
 
-  /* Renders a table spec ({columns, rows}) into host. */
+  /* Renders a table spec ({columns, rows}) into host.
+     Columns with a delta option render signed, colored change values. */
   function fmTable(host, spec) {
     if (!host) return;
     var table = document.createElement("table");
@@ -412,7 +503,7 @@ tbody tr:hover { background: rgba(11, 11, 11, 0.03); }
       var th = document.createElement("th");
       th.scope = "col";
       th.textContent = col.label;
-      if (col.format) th.className = "num";
+      if (col.format || col.delta) th.className = "num";
       headRow.appendChild(th);
     });
     thead.appendChild(headRow);
@@ -421,10 +512,18 @@ tbody tr:hover { background: rgba(11, 11, 11, 0.03); }
     spec.rows.forEach(function (row) {
       var tr = document.createElement("tr");
       spec.columns.forEach(function (col) {
-        var cell = document.createElement(col.format ? "td" : "th");
-        if (!col.format) cell.scope = "row";
+        var cell = document.createElement(col.format || col.delta ? "td" : "th");
+        if (!col.format && !col.delta) cell.scope = "row";
         else cell.className = "num";
-        cell.textContent = col.format ? fmFormat(row[col.key], col.format) : String(row[col.key]);
+        if (col.delta) {
+          var v = row[col.key];
+          var up = v > 0, down = v < 0;
+          var good = up === !!col.delta.upIsGood;
+          cell.className += " delta " + (up || down ? (good ? "good" : "bad") : "neutral");
+          cell.textContent = (up ? "+" : down ? "-" : "") + fmFormat(Math.abs(v), col.delta.format);
+        } else {
+          cell.textContent = col.format ? fmFormat(row[col.key], col.format) : String(row[col.key]);
+        }
         tr.appendChild(cell);
       });
       tbody.appendChild(tr);

@@ -13,7 +13,9 @@ The result renders fully from `file://` and is safe to email or drop in a shared
 
 - `template.html` - the report scaffold: header, KPI tiles, chart sections, data-table sections, footer, CSS design tokens, and the inlined Chart.js build.
 - `example/ga4-monthly-example.html` - a filled GA4 traffic-and-conversion report: KPI tiles, a two-series line chart (this period vs previous, with the context series de-emphasized), a horizontal channel bar chart with value-at-tip labels, and a landing-pages table.
-- `example/gsc-monthly-example.html` - a filled Google Search Console search-performance report: KPI tiles with inverted delta semantics on average position (lower is better, so a negative change renders as a green downward arrow), clicks and impressions as two separate charts because their scales differ (never a dual-axis chart), and top-queries plus top-pages tables.
+- `example/gsc-monthly-example.html` - a filled Google Search Console search-performance analysis: KPI tiles with inverted delta semantics on average position (lower is better, so a negative change renders as a green downward arrow), clicks and impressions as two separate charts because their scales differ (never a dual-axis chart), a branded vs non-branded split with the brand patterns stated, biggest-improvements and biggest-drops tables with colored signed deltas, striking-distance opportunities (positions 4-15, high impressions, low CTR), and top pages with clicks change.
+  Every narrative states the action the data suggests.
+  The standard analysis questions it answers: what improved, what dropped, where the striking-distance opportunities are, and how branded vs non-branded clicks split - reproduce the analysis, not just the layout.
 Copy the example whose shape matches your data, then delete the sections you do not need.
 - `assets/chart.umd.js` - the vendored Chart.js UMD build, byte-identical to the copy inlined in `template.html`.
 - `assets/LICENSE.md` and `assets/VERSION` - the Chart.js MIT license and the exact version and source URL.
@@ -46,8 +48,9 @@ Every report-specific number lives in `REPORT_DATA`; the header, KPI tiles, char
   `series` is `[{name, values}]`, max 8 entries; series names must be unique.
   `series[i].color: "deemph"` renders that series in de-emphasis gray - use it when one series is the point and the rest are context.
   Supported `type` values are `"line"` and `"bar"`; `horizontal: true` makes bars horizontal; `valueLabels: true` draws the value at the bar tip.
-- `tables` - map of spec key to table spec: `{columns: [{key, label, format?}], rows: [{key: value, ...}]}`.
+- `tables` - map of spec key to table spec: `{columns: [{key, label, format?, delta?}], rows: [{key: value, ...}]}`.
   Columns with a `format` render right-aligned with tabular figures.
+  A column with `delta: {upIsGood, format}` instead renders a signed, colored change value - good or bad color per `upIsGood` (false for position changes, where lower is better), neutral for zero - so delta cells never rely on color alone.
 
 ## Chart-selection rules
 

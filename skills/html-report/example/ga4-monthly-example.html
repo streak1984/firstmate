@@ -143,6 +143,10 @@ tbody tr:last-child td, tbody tr:last-child th { border-bottom: none; }
 /* Numeric cells: right-aligned with tabular figures so columns line up. */
 th.num, td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 tbody tr:hover { background: rgba(11, 11, 11, 0.03); }
+/* Signed delta cells in tables: reserved good/bad colors, never color alone. */
+.table-card td.delta.good { color: var(--good); }
+.table-card td.delta.bad { color: var(--bad); }
+.table-card td.delta.neutral { color: var(--ink-2); }
 
 /* ── Footer ─────────────────────────────────────────────────────────────── */
 .report-footer {
@@ -372,7 +376,8 @@ tbody tr:hover { background: rgba(11, 11, 11, 0.03); }
     return nf.format(value);
   }
 
-  /* Renders a table spec ({columns, rows}) into host. */
+  /* Renders a table spec ({columns, rows}) into host.
+     Columns with a delta option render signed, colored change values. */
   function fmTable(host, spec) {
     if (!host) return;
     var table = document.createElement("table");
@@ -382,7 +387,7 @@ tbody tr:hover { background: rgba(11, 11, 11, 0.03); }
       var th = document.createElement("th");
       th.scope = "col";
       th.textContent = col.label;
-      if (col.format) th.className = "num";
+      if (col.format || col.delta) th.className = "num";
       headRow.appendChild(th);
     });
     thead.appendChild(headRow);
@@ -391,10 +396,18 @@ tbody tr:hover { background: rgba(11, 11, 11, 0.03); }
     spec.rows.forEach(function (row) {
       var tr = document.createElement("tr");
       spec.columns.forEach(function (col) {
-        var cell = document.createElement(col.format ? "td" : "th");
-        if (!col.format) cell.scope = "row";
+        var cell = document.createElement(col.format || col.delta ? "td" : "th");
+        if (!col.format && !col.delta) cell.scope = "row";
         else cell.className = "num";
-        cell.textContent = col.format ? fmFormat(row[col.key], col.format) : String(row[col.key]);
+        if (col.delta) {
+          var v = row[col.key];
+          var up = v > 0, down = v < 0;
+          var good = up === !!col.delta.upIsGood;
+          cell.className += " delta " + (up || down ? (good ? "good" : "bad") : "neutral");
+          cell.textContent = (up ? "+" : down ? "-" : "") + fmFormat(Math.abs(v), col.delta.format);
+        } else {
+          cell.textContent = col.format ? fmFormat(row[col.key], col.format) : String(row[col.key]);
+        }
         tr.appendChild(cell);
       });
       tbody.appendChild(tr);
