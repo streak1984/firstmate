@@ -141,6 +141,31 @@ tests/fm-busy-adapter-wiring.test.sh
 tests/fm-crew-state.test.sh
 ```
 
+## Working-stale durable-progress bound
+
+The watcher executable was reverified on 2026-08-15 with Claude Code 2.1.233 and no-mistakes v1.48.0.
+A stale pane with a positive `run-step` or `pane` working verdict remains quiet initially, but the bounded override now follows the task HEAD and status-log signature independently of rendered pane hashes.
+At the bound, the watcher re-reads current crew state and durable progress once: a new commit or status append restarts the quiet window, a declared pause keeps its separate long cadence, and unchanged progress surfaces a possible-wedge wake even when the pane keeps repainting.
+The check sits after the shared backend capture and `fm-crew-state.sh` classification interfaces, so tmux, Herdr, Zellij, Orca, and cmux use the same bound, and no harness-specific lifecycle contract changes.
+Away-mode handoff, secondmate idle handling, busy-turn alarms, and turn-end guards remain separate owners and unchanged.
+
+```sh
+claude --version
+no-mistakes --version
+set -o pipefail
+tests/fm-watch-triage.test.sh \
+  | grep -E 'working stale timing survives|new commit restarts'
+```
+
+Observed output:
+
+```text
+2.1.233 (Claude Code)
+no-mistakes version v1.48.0 (2ac3769) 2026-08-08T06:39:10Z
+ok - terminal and nonterminal working-stale timing survives cosmetic pane hashes until durable progress
+ok - a new commit restarts the working stale bound without waking firstmate
+```
+
 ## Turn-end guard
 
 The direct and passive mechanisms were validated across all five harnesses on 2026-07-08 through 2026-07-12, with Claude's replacement Stop-owned path revalidated on 2026-07-24.

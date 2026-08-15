@@ -74,7 +74,12 @@ if [ "${1:-}" = "list-windows" ]; then
   exit 0
 fi
 if [ "${1:-}" = "capture-pane" ]; then
-  if [ -n "${FM_FAKE_TMUX_CAPTURE:-}" ]; then
+  if [ -n "${FM_FAKE_TMUX_CAPTURE_COUNTER:-}" ]; then
+    n=$(cat "$FM_FAKE_TMUX_CAPTURE_COUNTER" 2>/dev/null || printf '0')
+    n=$((n + 1))
+    printf '%s\n' "$n" > "$FM_FAKE_TMUX_CAPTURE_COUNTER"
+    printf 'rendered footer tick %s\n' "$(( (n - 1) / 3 ))"
+  elif [ -n "${FM_FAKE_TMUX_CAPTURE:-}" ]; then
     cat "$FM_FAKE_TMUX_CAPTURE"
   fi
   exit 0

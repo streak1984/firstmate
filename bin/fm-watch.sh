@@ -30,8 +30,13 @@
 #                          also carries a "demand-deep-inspection" marker so the
 #                          wake payload itself, not just repetition, forces a
 #                          closer look instead of another routine supervision
-#                          resume. Unless afk is active. A genuinely busy pane
-#                          (window_is_busy true) is exempt from the above, but
+#                          resume. A separate durable-progress watchdog follows
+#                          the task HEAD and status-log signature after any
+#                          working override, so cosmetic pane repainting cannot
+#                          restart that bound; it re-reads crew state only when
+#                          the bound expires. Unless afk is active.
+#                          A genuinely busy pane (window_is_busy true) is exempt
+#                          from the above, but
 #                          only up to two progress bounds, both delivered through
 #                          the same wedge timer with a DISTINGUISHING reason:
 #                          overlong-turn (busy past BUSY_TURN_MAX_SECS with no
@@ -142,6 +147,12 @@ SIGNAL_GRACE=${FM_SIGNAL_GRACE:-30}   # seconds to linger after a signal so trai
 # daemon owns triage, so this watcher reverts to one-shot (enqueue + exit on every
 # wake) and never double-triages - and never runs the costly provably-working read.
 STALE_ESCALATE_SECS=${FM_STALE_ESCALATE_SECS:-240}  # idle secs before a provably-working stale escalates as a possible wedge
+# A stale pane absorbed from one positive working verdict also starts a
+# window-scoped durable-progress watch keyed to task id, HEAD, and status-log
+# signature. Pane hashes are presentation, not progress: repaint churn never
+# resets this watch. The current signature and crew state are re-read only when
+# STALE_ESCALATE_SECS expires (or another new stale hash already requires the
+# costly classification), preserving the watcher's cheap per-poll path.
 # A busy pane is unconditional proof of liveness with no built-in duration bound,
 # so a hung foreground call can remain hidden even while its rendered busy
 # footer changes every poll. BUSY_TURN_MAX_SECS bounds how long any busy pane
@@ -376,6 +387,90 @@ wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-
       fi
       ;;
   esac
+}
+
+# Durable progress for a task is deliberately narrower than pane activity.
+# A new commit or status append changes this signature; elapsed counters,
+# spinners, child-process footers, and other rendered repainting do not.
+working_progress_signature() {  # <task>
+  local task=$1 meta status_sig wt head
+  meta="$STATE/$task.meta"
+  status_sig=$(stat_sig "$STATE/$task.status") || status_sig=missing
+  wt=$(fm_meta_get "$meta" worktree)
+  head=missing
+  if [ -n "$wt" ] && [ -d "$wt" ]; then
+    head=$(git -C "$wt" rev-parse --verify HEAD 2>/dev/null) || head=missing
+  fi
+  printf '%s|%s|%s' "$task" "$head" "$status_sig"
+}
+
+working_progress_clear() {  # <window>
+  local key
+  key=$(printf '%s' "$1" | tr ':/.' '___')
+  rm -f "$STATE/.stale-progress-$key" \
+    "$STATE/.stale-progress-since-$key" \
+    "$STATE/.stale-progress-escalations-$key"
+}
+
+# Observe durable progress while a caller is already paying for a new-hash
+# crew-state classification. A changed signature starts a fresh bounded quiet
+# window and clears both progress-watch and hash-local wedge escalation aging.
+working_progress_observe() {  # <window> <task>
+  local w=$1 task=$2 key signature_file since_file escalation_file signature prior
+  key=$(printf '%s' "$w" | tr ':/.' '___')
+  signature_file="$STATE/.stale-progress-$key"
+  since_file="$STATE/.stale-progress-since-$key"
+  escalation_file="$STATE/.stale-progress-escalations-$key"
+  signature=$(working_progress_signature "$task")
+  prior=$(cat "$signature_file" 2>/dev/null || true)
+  if [ "$signature" != "$prior" ]; then
+    printf '%s' "$signature" > "$signature_file"
+    date +%s > "$since_file"
+    rm -f "$escalation_file" "$STATE/.stale-since-$key" \
+      "$STATE/.wedge-escalations-$key"
+  elif [ ! -s "$since_file" ]; then
+    date +%s > "$since_file"
+  fi
+}
+
+# Escalation-round recheck for a previously working stale pane.
+# A pause clears the cause, a new commit/status signature restarts the quiet
+# window, and a stopped or still-working crew with no progress remains a wedge
+# candidate. This is the only repeated crew-state read for the progress watch.
+working_progress_cause_holds() {  # <window>
+  local w=$1 task key signature_file signature prior class
+  task=$(window_to_task "$w" "$STATE")
+  [ -n "$task" ] || return 0
+  class=$(crew_absorb_class "$task")
+  [ "$class" != paused ] || return 1
+  [ "$class" = working ] || return 0
+  key=$(printf '%s' "$w" | tr ':/.' '___')
+  signature_file="$STATE/.stale-progress-$key"
+  signature=$(working_progress_signature "$task")
+  prior=$(cat "$signature_file" 2>/dev/null || true)
+  if [ "$signature" != "$prior" ]; then
+    printf '%s' "$signature" > "$signature_file"
+    rm -f "$STATE/.stale-progress-escalations-$key" \
+      "$STATE/.stale-since-$key" "$STATE/.wedge-escalations-$key"
+    return 1
+  fi
+  rm -f "$STATE/.stale-since-$key" "$STATE/.wedge-escalations-$key"
+  return 0
+}
+
+# Cheap on every poll after one working stale classification: wedge_timer_check
+# only invokes the crew-state/signature recheck once the persisted bound is due.
+working_progress_watchdog_tick() {  # <window>
+  local w=$1 key signature_file since_file escalation_file age cause
+  key=$(printf '%s' "$w" | tr ':/.' '___')
+  signature_file="$STATE/.stale-progress-$key"
+  [ -e "$signature_file" ] || return 0
+  since_file="$STATE/.stale-progress-since-$key"
+  escalation_file="$STATE/.stale-progress-escalations-$key"
+  age=$(age_of "$since_file")
+  cause="no commit/status progress for ${age}s despite working appearance, possible wedge"
+  wedge_timer_check "$w" "$since_file" "working stale (no durable progress)" \
+    "$escalation_file" "$cause" working_progress_cause_holds
 }
 
 rendered_idle_watchdog_clear() {  # <window-key>
@@ -1111,6 +1206,13 @@ EOF
     fi
     busy_source=${busy_class#* }
     [ "$idle_watchdog_state" != busy ] || busy_source=rendered-idle-watchdog
+    if ! afk_present && [ "$kind" != secondmate ]; then
+      if status_is_paused_or_captain_held "$last"; then
+        working_progress_clear "$w"
+      else
+        working_progress_watchdog_tick "$w"
+      fi
+    fi
     if [ "$h" = "$prev" ]; then
       n=$(( $(cat "$cf" 2>/dev/null || echo 0) + 1 ))
       echo "$n" > "$cf"
@@ -1147,9 +1249,11 @@ EOF
           if [ "$(cat "$sf" 2>/dev/null || true)" != "$h" ]; then
             if crew_is_provably_working "$(window_to_task "$w" "$STATE")"; then
               printf '%s' "$h" > "$sf"
+              working_progress_observe "$w" "$task"
               date +%s > "$ssf"
               triage_log "absorbed stale (provably working, overriding a stale captain-relevant status): $w"
             else
+              working_progress_clear "$w"
               fm_wake_append stale "$w" "stale: $w" || exit 1
               printf '%s' "$h" > "$sf"
               rm -f "$ssf"
@@ -1187,6 +1291,7 @@ EOF
               working)
                 clear_pause_tracking "$w"
                 printf '%s' "$h" > "$sf"
+                working_progress_observe "$w" "$task"
                 date +%s > "$ssf"
                 triage_log "absorbed non-terminal stale (provably working): $w"
                 ;;
@@ -1194,6 +1299,7 @@ EOF
                 handle_paused_stale "$w" "$task" "$h"
                 ;;
               *)
+                working_progress_clear "$w"
                 surface_nonterminal_stale "$w" "$h"
                 ;;
             esac

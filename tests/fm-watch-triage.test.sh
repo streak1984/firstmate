@@ -605,6 +605,105 @@ test_stale_terminal_status_overridden_by_active_run() {
   pass "a stale terminal-looking status is overridden and absorbed while a run is actively working, then wedge-escalated"
 }
 
+# A rendered footer can repaint often enough to produce a new pane hash before
+# the hash-local stale timer expires, even though neither the task HEAD nor its
+# status log advances.
+# The no-progress bound must survive those cosmetic hashes while the active
+# run-step remains eligible for the initial quiet absorb.
+test_stale_working_override_survives_render_churn() {
+  local status_case dir state fakebin out window key counter statusf worktree sig pid
+  for status_case in terminal nonterminal; do
+    dir=$(make_case "stale-working-render-churn-$status_case"); state="$dir/state"; fakebin="$dir/fakebin"
+    out="$dir/watch.out"; counter="$dir/capture-count"; window="test:fm-churn-$status_case"
+    worktree="$dir/worktree"
+    fm_git_init_commit "$worktree"
+
+    printf 'window=%s\nkind=ship\nworktree=%s\n' "$window" "$worktree" > "$state/churn-$status_case.meta"
+    statusf="$state/churn-$status_case.status"
+    case "$status_case" in
+      terminal) printf 'ready: implementation committed before validation\n' > "$statusf" ;;
+      *)        printf 'working: implementation under validation\n' > "$statusf" ;;
+    esac
+    sig=$(seen_sig "$statusf"); printf '%s' "$sig" > "$state/.seen-churn-${status_case}_status"
+    printf '0\n' > "$counter"
+    export FM_FAKE_CREW_STATE='state: working · source: run-step · ci running'
+
+    PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE_COUNTER="$counter" \
+      FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+      FM_STALE_ESCALATE_SECS=1 FM_POLL=0.2 FM_SIGNAL_GRACE=1 \
+      FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+    pid=$!
+    wait_for_exit "$pid" 50 || fail "$status_case render churn reset the working stale timer indefinitely"
+    grep -F "stale: $window" "$out" >/dev/null \
+      || fail "$status_case render-churn escalation omitted the stale window: $(cat "$out")"
+    grep -F "possible wedge" "$out" >/dev/null \
+      || fail "$status_case render-churn escalation omitted the possible-wedge reason: $(cat "$out")"
+    key=$(printf '%s' "$window" | tr ':/.' '___')
+    [ ! -e "$state/.stale-since-$key" ] \
+      || fail "$status_case render-churn escalation retained its stale timer"
+  done
+  unset FM_FAKE_CREW_STATE
+  pass "terminal and nonterminal working-stale timing survives cosmetic pane hashes until durable progress"
+}
+
+# A real task commit is durable progress and must restart the quiet window.
+# This keeps a healthy active run absorbed while retaining the no-progress
+# alarm when that same signature stops advancing again.
+test_stale_working_progress_restarts_bound() {
+  local dir state fakebin out capture_file window key statusf worktree sig pid i before after
+  dir=$(make_case stale-working-progress); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"; window="test:fm-progress"
+  worktree="$dir/worktree"
+  fm_git_init_commit "$worktree"
+  printf 'pipeline wait\n' > "$capture_file"
+  printf 'window=%s\nkind=ship\nworktree=%s\n' "$window" "$worktree" > "$state/progress.meta"
+  statusf="$state/progress.status"
+  printf 'ready: implementation committed before validation\n' > "$statusf"
+  sig=$(seen_sig "$statusf"); printf '%s' "$sig" > "$state/.seen-progress_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  export FM_FAKE_CREW_STATE='state: working · source: run-step · ci running'
+
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_STALE_ESCALATE_SECS=2 FM_POLL=0.2 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  i=0
+  while [ "$i" -lt 50 ] && kill -0 "$pid" 2>/dev/null; do
+    [ -s "$state/.stale-progress-$key" ] && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  kill -0 "$pid" 2>/dev/null \
+    || { reap "$pid"; fail "working progress watch did not start quietly: $(cat "$out")"; }
+  before=$(cat "$state/.stale-progress-$key" 2>/dev/null || true)
+  [ -n "$before" ] \
+    || { reap "$pid"; fail "working progress watch did not record its initial signature"; }
+
+  printf 'progress\n' >> "$worktree/README.md"
+  git -C "$worktree" add README.md
+  git -C "$worktree" commit -qm progress
+  i=0
+  after=$before
+  while [ "$i" -lt 50 ] && kill -0 "$pid" 2>/dev/null; do
+    after=$(cat "$state/.stale-progress-$key" 2>/dev/null || true)
+    [ "$after" != "$before" ] && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  kill -0 "$pid" 2>/dev/null \
+    || { reap "$pid"; fail "a durable-progress commit was escalated instead of restarting the bound: $(cat "$out")"; }
+  [ "$after" != "$before" ] \
+    || { reap "$pid"; fail "the progress watchdog did not observe the new task HEAD at its bounded recheck"; }
+  [ ! -s "$out" ] \
+    || { reap "$pid"; fail "durable progress printed a stale wake: $(cat "$out")"; }
+  [ ! -s "$state/.wake-queue" ] \
+    || { reap "$pid"; fail "durable progress enqueued a stale wake"; }
+  reap "$pid"
+  unset FM_FAKE_CREW_STATE
+  pass "a new commit restarts the working stale bound without waking firstmate"
+}
+
 # --- non-terminal stale, crew provably working: absorbed, then wedge-escalated ---
 # A provably-working crew (an actively-running pipeline) legitimately sits on a
 # static pane (e.g. waiting on CI), so a non-terminal stale is absorbed and only
@@ -2005,6 +2104,8 @@ test_terminal_stale_surfaced
 test_capture_failure_confirmed_gone_surfaces_once
 test_capture_failure_transient_not_reported_gone
 test_stale_terminal_status_overridden_by_active_run
+test_stale_working_override_survives_render_churn
+test_stale_working_progress_restarts_bound
 test_nonterminal_stale_provably_working_absorbed_then_escalated
 test_wedge_escalation_marks_demand_deep_inspection_after_threshold
 test_wedge_escalation_resets_when_pane_becomes_active
