@@ -130,8 +130,13 @@ body {
   margin-top: 16px;
 }
 .table-card table { min-width: 100%; }
-table { border-collapse: collapse; font-size: 14px; width: 100%; }
+table { border-collapse: collapse; font-size: 14px; min-width: 100%; width: max-content; }
 th, td { padding: 9px 16px; text-align: left; vertical-align: top; }
+/* Numeric and delta cells never wrap; text cells (row headers) wrap at a
+   readable width. The table grows to its content and the .table-scroll
+   container scrolls horizontally, so columns are never squeezed illegible. */
+tbody td { white-space: nowrap; }
+tbody th { white-space: normal; min-width: 16ch; max-width: 44ch; }
 thead th {
   border-bottom: 1px solid var(--baseline);
   font-weight: 600;
@@ -630,7 +635,7 @@ tbody tr:hover { background: rgba(11, 11, 11, 0.03); }
           usePointStyle: true, pointStyle: isLine ? "line" : "rect", boxPadding: 4,
           titleFont: { family: PALETTE.font, size: 12, weight: "600" },
           bodyFont: { family: PALETTE.font, size: 12 },
-          callbacks: { label: function (ctx) { var v = ctx.parsed.y != null ? ctx.parsed.y : ctx.parsed.x; return ctx.dataset.label + ": " + fmt(v); } },
+          callbacks: { label: function (ctx) { var v = horizontal ? ctx.parsed.x : ctx.parsed.y; return ctx.dataset.label + ": " + fmt(v); } },
         },
       },
       scales: horizontal ? { x: valueAxis, y: categoryAxis } : { x: categoryAxis, y: valueAxis },
