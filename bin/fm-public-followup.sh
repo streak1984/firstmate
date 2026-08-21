@@ -103,6 +103,8 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 
 # shellcheck source=bin/fm-public-followup-lib.sh
 . "$SCRIPT_DIR/fm-public-followup-lib.sh"
+# shellcheck source=bin/fm-secondmate-registry-lib.sh
+. "$SCRIPT_DIR/fm-secondmate-registry-lib.sh"
 
 RETRY_BACKOFF=${FM_PF_RETRY_BACKOFF_SECS:-900}
 case "$RETRY_BACKOFF" in ''|*[!0-9]*) RETRY_BACKOFF=900 ;; esac
@@ -141,7 +143,7 @@ require_tools() {
 }
 
 # Every tasks-axi call runs from the home whose backlog owns the obligation, the
-# same convention bin/fm-decision-hold.sh uses for typed backlog state.
+# same convention bin/fm-captain-hold.sh uses for typed backlog state.
 tx() { (cd "$FM_HOME" && tasks-axi "$@"); }
 
 # obligation_json <id>: the complete typed obligation payload on stdout, empty
@@ -521,8 +523,7 @@ public_followup_secondmate_home() {
   meta="$STATE/$id.meta"
   home=$(fmx_meta_get "$meta" home)
   if [ -z "$home" ] && [ -f "$DATA/secondmates.md" ] && [ ! -L "$DATA/secondmates.md" ]; then
-    home=$(awk -v id="$id" '$1 == "-" && $2 == id { line=$0 } END { print line }' "$DATA/secondmates.md" 2>/dev/null \
-      | sed -n 's/.*(home:[[:space:]]*\([^;)]*\);.*/\1/p' | sed 's/[[:space:]]*$//')
+    home=$(secondmate_registry_field "$DATA/secondmates.md" "$id" home || true)
   fi
   [ -n "$home" ] || return 1
   case "$home" in /*) ;; *) return 1 ;; esac

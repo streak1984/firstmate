@@ -25,6 +25,8 @@
 #   pi/pi-signed low|medium|high|xhigh|max via --thinking.
 #   opencode     no verified launch effort flag - no level is accepted.
 #   kimi         no reasoning-effort flag - no level is accepted.
+#   cursor       no reasoning-effort flag - no level is accepted.
+#   muse         low|medium|high|xhigh|max via --effort.
 #
 # No side effects on source. set -u / set -e safe.
 
@@ -36,6 +38,7 @@ fm_effort_levels() {
     codex) echo "low medium high xhigh max" ;;
     grok) echo "low medium high" ;;
     pi|pi-signed) echo "low medium high xhigh max" ;;
+    muse) echo "low medium high xhigh max" ;;
     *) echo "" ;;
   esac
 }
@@ -55,7 +58,7 @@ fm_effort_level_supported() {
 fm_effort_levels_json() {
   local harness levels first=1
   printf '{'
-  for harness in claude codex opencode pi pi-signed grok kimi; do
+  for harness in claude codex opencode pi pi-signed grok kimi cursor muse; do
     [ "$first" = 1 ] || printf ','
     first=0
     printf '"%s":[' "$harness"

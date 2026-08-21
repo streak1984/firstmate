@@ -93,8 +93,23 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 _buf=
+_drawn=0
+_rule=
+_i=0
+while [ "$_i" -lt 190 ]; do
+  _rule="${_rule}─"
+  _i=$((_i + 1))
+done
+# The fixture has no real Claude process for identity corroboration, so it
+# renders the production separator-bounded composer shape. The glyph and
+# separators are rendering only; they never enter the submitted buffer.
 redraw() {
-  printf '\r\033[K%s' "$_buf"
+  if [ "$_drawn" = 1 ]; then
+    printf '\r\033[1A\033[J'
+  fi
+  printf '%s\n\xe2\x9d\xaf %s\n%s\033[1A\r' "$_rule" "$_buf" "$_rule"
+  printf '\033[%dC' "$((2 + ${#_buf}))"
+  _drawn=1
 }
 submit_line() {
   local _line=$_buf _c _hex
@@ -106,7 +121,6 @@ submit_line() {
   _hex=$(printf '%s' "$_line" | od -An -tx1 | tr -d ' \n')
   printf '%s\t%s\t%s\n' "$_hex" "$_line" "$_c" >> "$LOG"
   _buf=
-  printf '\r\033[K\n'
   redraw
 }
 
@@ -199,6 +213,7 @@ reset_state() {
          "$STATE_DIR"/.subsuper-* \
          "$STATE_DIR"/.wake-queue* \
          "$STATE_DIR"/.watch.lock* \
+         "$STATE_DIR"/.watcher-down* \
          "$STATE_DIR"/.last-* \
          "$STATE_DIR"/.hash-* \
          "$STATE_DIR"/.count-* \

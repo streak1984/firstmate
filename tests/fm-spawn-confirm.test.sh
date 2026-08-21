@@ -158,7 +158,11 @@ run_spawn() {
   else
     spawn_args+=(--harness "$harness")
   fi
-  [ -n "$scout" ] && spawn_args+=(--scout)
+  if [ -n "$scout" ]; then
+    spawn_args+=(--scout)
+  else
+    spawn_args+=(--mode no-mistakes --yolo off)
+  fi
   # FM_BACKEND=tmux pins the fake backend: the suite may run inside a herdr
   # or cmux runtime, whose auto-detection would otherwise target the real
   # session instead of the fake tmux binary.

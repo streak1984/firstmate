@@ -61,7 +61,8 @@ run_spawn() {  # <home> <project> <worktree> <fakebin> <capture> <id> <harness>
     FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$worktree" \
     FM_FAKE_PANE_CAPTURE="$capture" FM_SPAWN_AUTONOMY_POLLS=1 \
     FM_SPAWN_AUTONOMY_POLL_INTERVAL=0 TMUX='fake,1,0' \
-    PATH="$fakebin:$PATH" "$SPAWN" "$id" "$project" --harness "$harness" 2>&1
+    PATH="$fakebin:$PATH" "$SPAWN" "$id" "$project" --harness "$harness" \
+      --mode no-mistakes --yolo off 2>&1
 }
 
 test_verified_claude_bypass_is_accepted() {
@@ -72,7 +73,7 @@ $rec
 EOF
   out=$(run_spawn "$home" "$project" "$worktree" "$fakebin" \
     '⏵⏵ bypass permissions on (shift+tab to cycle)' "$id" claude) || rc=$?
-  expect_code 0 "$rc" "a verified Claude bypass launch must stay healthy"
+  expect_code 0 "$rc" "a verified Claude bypass launch must stay healthy: $out"
   assert_contains "$out" "spawned $id harness=claude" \
     "healthy Claude autonomy observation blocked spawn completion"
   assert_not_contains "$out" "AUTONOMY WARNING" \

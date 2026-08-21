@@ -119,7 +119,8 @@ run_spawn() {  # <home> <project> <worktree> <fakebin> <id> <harness> <dialog-de
     FM_PI_TRUST_CLEAR_POLLS=3 FM_PI_TRUST_CLEAR_POLL_INTERVAL=0 \
     FM_SPAWN_CONFIRM_TIMEOUT=0 FM_SPAWN_CONFIRM_POLL_INTERVAL=0.01 \
     TMUX='fake,1,0' PATH="$fakebin:$PATH" \
-    "$SPAWN" "$id" "$project" --harness "$harness" 2>&1
+    "$SPAWN" "$id" "$project" --harness "$harness" \
+      --mode no-mistakes --yolo off 2>&1
 }
 
 test_dialog_matched_is_accepted_and_confirmed_cleared() {

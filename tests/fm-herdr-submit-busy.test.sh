@@ -113,7 +113,7 @@ write_opencode_pending_capture() {  # <file>
   local file=$1 dash
   dash=$(printf '\xe2\x94\x80%.0s' {1..27})
   printf '\xe2\x94\x8c%s\xe2\x94\x90\n' "$dash" > "$file"
-  printf '\xe2\x94\x82 > fix the validation run \xe2\x94\x82\n' >> "$file"
+  printf '\xe2\x94\x82 > fix the validation run  \xe2\x94\x82\n' >> "$file"
   printf '\xe2\x94\xb0%s\xe2\x94\xaf\n' "$dash" >> "$file"
 }
 
@@ -126,17 +126,17 @@ test_busy_pi_queued_steering_row_returns_queued() {
   local dir log resp fb out enter_count
   dir="$TMP_ROOT/busy-pi-queued"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/2.out"
-  write_pi_busy_capture "$resp/4.out"
-  printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/5.out"
+  write_pi_busy_capture "$resp/5.out"
   printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/6.out"
-  write_pi_busy_capture "$resp/8.out"
-  printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/9.out"
+  printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/7.out"
+  write_pi_busy_capture "$resp/9.out"
   printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/10.out"
-  write_pi_busy_capture "$resp/12.out"
-  printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/13.out"
+  printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/11.out"
+  write_pi_busy_capture "$resp/13.out"
   printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/14.out"
   printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/15.out"
-  write_pi_queued_capture "$resp/16.out"
+  printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/16.out"
+  write_pi_queued_capture "$resp/17.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "steer me now" 3 0.01 0.01' "$ROOT" )
@@ -152,17 +152,16 @@ test_busy_pi_absent_returns_pending() {
   local dir log resp fb out
   dir="$TMP_ROOT/busy-pi-absent"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/2.out"
-  write_pi_busy_capture "$resp/4.out"
-  printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/5.out"
+  write_pi_busy_capture "$resp/5.out"
   printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/6.out"
-  write_pi_busy_capture "$resp/8.out"
-  printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/9.out"
+  printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/7.out"
+  write_pi_busy_capture "$resp/9.out"
   printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/10.out"
-  write_pi_busy_capture "$resp/12.out"
-  printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/13.out"
+  printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/11.out"
+  write_pi_busy_capture "$resp/13.out"
   printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/14.out"
   printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/15.out"
-  write_pi_busy_capture "$resp/16.out"
+  printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/16.out"
   write_pi_busy_capture "$resp/17.out"
   printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/18.out"
   fb=$(make_herdr_fakebin "$dir")
@@ -181,19 +180,15 @@ test_busy_pi_retained_text_returns_pending() {
   local dir log resp fb out
   dir="$TMP_ROOT/busy-pi-retained"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/2.out"
-  write_pi_retained_capture "$resp/4.out"
-  printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/5.out"
+  write_pi_retained_capture "$resp/5.out"
   printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/6.out"
   write_pi_retained_capture "$resp/8.out"
   printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/9.out"
-  printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/10.out"
-  write_pi_retained_capture "$resp/12.out"
+  write_pi_retained_capture "$resp/11.out"
+  printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/12.out"
   printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/13.out"
-  printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/14.out"
+  write_pi_retained_capture "$resp/14.out"
   printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/15.out"
-  write_pi_retained_capture "$resp/16.out"
-  write_pi_retained_capture "$resp/17.out"
-  printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/18.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "steer me now" 3 0.01 0.01' "$ROOT" )
@@ -208,12 +203,12 @@ test_busy_nonpi_retained_text_returns_queued() {
   local dir log resp fb out enter_count
   dir="$TMP_ROOT/busy-opencode-queued"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   printf '{"result":{"agent":{"agent":"opencode","agent_status":"working"}}}\n' > "$resp/2.out"
-  write_opencode_pending_capture "$resp/4.out"
-  write_opencode_pending_capture "$resp/6.out"
-  write_opencode_pending_capture "$resp/8.out"
-  printf '{"result":{"agent":{"agent":"opencode","agent_status":"working"}}}\n' > "$resp/9.out"
-  write_opencode_pending_capture "$resp/10.out"
+  write_opencode_pending_capture "$resp/5.out"
+  write_opencode_pending_capture "$resp/7.out"
+  write_opencode_pending_capture "$resp/9.out"
+  printf '{"result":{"agent":{"agent":"opencode","agent_status":"working"}}}\n' > "$resp/10.out"
   write_opencode_pending_capture "$resp/11.out"
+  printf '{"result":{"agent":{"agent":"opencode","agent_status":"working"}}}\n' > "$resp/12.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "steer me now" 3 0.01 0.01' "$ROOT" )
@@ -246,9 +241,13 @@ test_idle_pane_pending_returns_pending() {
   dir="$TMP_ROOT/idle-pending"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/2.out"
   printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/4.out"
-  printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/6.out"
-  printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/8.out"
-  printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/9.out"
+  write_opencode_pending_capture "$resp/5.out"
+  printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/7.out"
+  write_opencode_pending_capture "$resp/8.out"
+  printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/10.out"
+  write_opencode_pending_capture "$resp/11.out"
+  printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/12.out"
+  write_opencode_pending_capture "$resp/13.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "steer me now" 3 0.01 0.01' "$ROOT" )
@@ -269,15 +268,18 @@ test_fm_send_queued_verdict_exits_zero_with_note() {
   neutral="$dir/neutral-root"; mkdir -p "$neutral"
   fm_write_meta "$state/herdr-busy.meta" "window=default:w1:p2" "backend=herdr"
   touch "$state/.last-watcher-beat"
-  # 1: fm-send's own pre-submit blocked check (fm_backend_herdr_target_blocked)
-  # reads agent get once, before the submit core's OWN call sequence starts.
-  printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/1.out"
-  printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/3.out"
+  # Calls 1-2 are fm-send's dead-agent safety probe: a structured pane-presence
+  # read followed by the registered agent. Call 3 is the unsubmitted literal;
+  # the submit core then owns calls 4 onward.
+  printf '{"result":{"pane":{"pane_id":"w1:p2"}}}\n' > "$resp/1.out"
+  printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/2.out"
+  printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/4.out"
   write_pi_busy_capture "$resp/5.out"
-  printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/6.out"
-  printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/7.out"
+  write_pi_busy_capture "$resp/7.out"
   printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/8.out"
-  write_pi_queued_capture "$resp/9.out"
+  printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/9.out"
+  printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/10.out"
+  write_pi_queued_capture "$resp/11.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_ROOT_OVERRIDE="$neutral" FM_HOME="$neutral" FM_STATE_OVERRIDE="$state" \
     FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_SEND_RETRIES=1 FM_SEND_SLEEP=0 FM_SEND_SETTLE=0 \
@@ -295,25 +297,26 @@ test_fm_send_busy_absent_still_fails_loud() {
   neutral="$dir/neutral-root"; mkdir -p "$neutral"
   fm_write_meta "$state/herdr-busy.meta" "window=default:w1:p2" "backend=herdr"
   touch "$state/.last-watcher-beat"
-  # 1: fm-send's own pre-submit blocked check (fm_backend_herdr_target_blocked)
-  # reads agent get once, before the submit core's OWN call sequence starts.
-  printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/1.out"
-  printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/3.out"
+  # Preserve the same dead-agent preflight and submit-core sequence as the
+  # queued case, but give the final queue-evidence read no Steering row.
+  printf '{"result":{"pane":{"pane_id":"w1:p2"}}}\n' > "$resp/1.out"
+  printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/2.out"
+  printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/4.out"
   write_pi_busy_capture "$resp/5.out"
-  printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/6.out"
-  printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/7.out"
+  write_pi_busy_capture "$resp/7.out"
   printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/8.out"
-  write_pi_busy_capture "$resp/9.out"
-  write_pi_busy_capture "$resp/10.out"
-  printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/11.out"
+  printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/9.out"
+  printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/10.out"
+  write_pi_busy_capture "$resp/11.out"
+  printf '{"result":{"agent":{"agent":"pi","agent_status":"working"}}}\n' > "$resp/12.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_ROOT_OVERRIDE="$neutral" FM_HOME="$neutral" FM_STATE_OVERRIDE="$state" \
     FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_SEND_RETRIES=1 FM_SEND_SLEEP=0 FM_SEND_SETTLE=0 \
     "$ROOT/bin/fm-send.sh" default:w1:p2 "steer me now" 2>"$err" )
   rc=$?
-  expect_code 1 "$rc" "fm-send with a busy pane lacking queue evidence must exit non-zero"
-  assert_contains "$(cat "$err")" "delivery unconfirmed" "fm-send must keep the loud refusal for the busy-absent direction"
-  pass "fm-send: busy pane without queue evidence still exits non-zero with delivery unconfirmed"
+  expect_code 3 "$rc" "fm-send with a busy pane lacking queue evidence must exit delivered-unconfirmed"
+  assert_contains "$(cat "$err")" "submission is unconfirmed" "fm-send must keep the explicit unconfirmed report for the busy-absent direction"
+  pass "fm-send: busy pane without queue evidence stays nonzero with the delivered-unconfirmed status"
 }
 
 test_busy_pi_queued_steering_row_returns_queued

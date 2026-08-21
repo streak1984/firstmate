@@ -71,7 +71,8 @@ test_teardown_check_only_proves_landed_content_without_fetch() {
   printf 'same landed content\n' > "$project/landed.txt"
   git -C "$project" add landed.txt
   git -C "$project" commit -qm 'landed content'
-  git -C "$project" remote add origin "$project"
+  git -C "$project" remote set-url origin "$project" 2>/dev/null \
+    || git -C "$project" remote add origin "$project"
   git -C "$project" update-ref refs/remotes/origin/main refs/heads/main
   git -C "$project" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
   fm_write_meta "$home/state/crew-landed.meta" \

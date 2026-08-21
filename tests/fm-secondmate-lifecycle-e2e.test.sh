@@ -135,11 +135,11 @@ phase_spawn() {
 
 phase_send() {
   : > "$LOG"
-  : > "$PANE"
+  printf '────────────────────────\n❯\n────────────────────────\n' > "$PANE"
   # The meta window (firstmate:fm-design) must win over a foreign same-named
   # window returned by list-windows.
   PATH="$FAKEBIN:$PATH" FM_HOME="$HOME_DIR" FM_FAKE_TMUX_WINDOW="other-session:fm-design" \
-    FM_FAKE_TMUX_LOG="$LOG" FM_FAKE_TMUX_CAPTURE="$PANE" \
+    FM_FAKE_TMUX_LOG="$LOG" FM_FAKE_TMUX_CAPTURE="$PANE" FM_FAKE_TMUX_CURSOR_Y=1 \
     "$ROOT/bin/fm-send.sh" fm-design 'route this work' >/dev/null 2>&1 \
     || fail "fm-send failed for a bare firstmate window with home metadata"
   # design is a kind=secondmate target, so the request is prefixed with the
