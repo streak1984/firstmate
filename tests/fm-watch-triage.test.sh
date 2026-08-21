@@ -1180,6 +1180,220 @@ test_paused_authoritative_working_preserves_wedge_timer() {
   pass "a paused status overridden by authoritative working preserves its wedge timer and escalates"
 }
 
+# --- declared pause/captain-held vs an authoritative working run-step ---------
+# Regression for the 2026-08-21 false wedge storm: a delivered ship task whose
+# no-mistakes ci step kept reporting working (the repo registers no GitHub
+# checks, so the run sat on "waiting for checks" while monitoring until merged
+# or closed) declared paused: while it waited for the captain's merge. The
+# working run-step always won, so the pause was discarded and a false
+# stale/possible-wedge wake fired every FM_STALE_ESCALATE_SECS - reaching the
+# demand-deep-inspection marker at escalation 3 - until a human merged. A wedge
+# alarm exists to find a STUCK AGENT, so the declaration is authoritative
+# exactly when no agent can be stuck: only a confidently dead agent outranks
+# the working run-step, while a live agent (or unreadable liveness) keeps wedge
+# detection and secondmate windows keep their idle-endpoint exemption.
+test_declared_pause_dead_agent_outranks_working_runstep() {
+  local dir state fakebin out capture_file statusf window key pane_hash sig pid
+  dir=$(make_case paused-dead-outranks-working); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"; statusf="$state/held.status"
+  window="test:fm-held"
+  printf 'idle, run monitor waiting\n' > "$capture_file"
+  printf 'window=%s\nkind=ship\nharness=grok\nbackend=tmux\n' "$window" > "$state/held.meta"
+  printf 'paused: delivered, awaiting the captain merge\n' > "$statusf"
+  sig=$(seen_sig "$statusf"); printf '%s' "$sig" > "$state/.seen-held_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  pane_hash=$(hash_text "idle, run monitor waiting")
+  printf '%s' "$pane_hash" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  # Pre-seed a demand-deep-inspection-level escalation count: an absorbed pause
+  # must reset it, so a later genuine wedge on the same window still escalates
+  # from a clean base instead of inheriting the old count.
+  printf '3\n' > "$state/.wedge-escalations-$key"
+  # The agent has confidently exited (a bare shell in the pane) while
+  # fm-crew-state keeps reporting the run-step working - the false-wedge shape.
+  export FM_FAKE_CREW_STATE='state: working · source: run-step · ci step waiting for checks'
+
+  # Phase A: first sight classifies paused - absorbed, no wake, no wedge timer,
+  # pause marker established, wedge escalation counter reset.
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_FAKE_TMUX_CURRENT_COMMAND=zsh \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  if ! wait_live "$pid" 30; then
+    reap "$pid"; fail "dead-agent declared pause behind a working run-step was not absorbed: $(cat "$out")"
+  fi
+  [ ! -s "$out" ] || { reap "$pid"; fail "dead-agent declared pause behind a working run-step printed a wake: $(cat "$out")"; }
+  [ ! -s "$state/.wake-queue" ] || { reap "$pid"; fail "dead-agent declared pause behind a working run-step enqueued a wake"; }
+  [ "$(cat "$state/.stale-$key" 2>/dev/null || true)" = "$pane_hash" ] || { reap "$pid"; fail "pause absorb did not advance the stale suppressor"; }
+  [ -e "$state/.paused-$key" ] || { reap "$pid"; fail "pause absorb did not establish the pause marker"; }
+  [ ! -e "$state/.stale-since-$key" ] || { reap "$pid"; fail "pause absorb started a wedge timer"; }
+  [ ! -e "$state/.wedge-escalations-$key" ] || { reap "$pid"; fail "pause absorb did not reset the wedge escalation counter"; }
+  reap "$pid"
+
+  # Phase B: the pause ends (the captain merged) and the run-step genuinely
+  # wedges: the watcher clears the pause bookkeeping on the new declaration
+  # (including the pre-seeded escalation count), starts a fresh wedge timer,
+  # and escalates from a clean base (escalation 1) - proving the absorbed
+  # pause never accumulated toward deep inspection.
+  printf 'working: post-merge cleanup\n' > "$statusf"
+  sig=$(seen_sig "$statusf"); printf '%s' "$sig" > "$state/.seen-held_status"
+  : > "$out"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_FAKE_TMUX_CURRENT_COMMAND=zsh \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=2 FM_POLL=0.2 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 50 || fail "a genuine wedge after an absorbed pause did not escalate"
+  grep -F "possible wedge" "$out" >/dev/null || fail "post-pause wedge omitted its wedge reason: $(cat "$out")"
+  grep -F "escalation 1" "$out" >/dev/null || fail "post-pause wedge did not escalate from a clean base: $(cat "$out")"
+  unset FM_FAKE_CREW_STATE
+  pass "a declared pause behind a working run-step is paused (not wedged) when the agent is dead, and later wedges escalate from a clean base"
+}
+
+test_declared_captain_held_dead_agent_outranks_working_runstep() {
+  local dir state fakebin out capture_file statusf window key pane_hash sig pid
+  dir=$(make_case captain-held-dead-outranks-working); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"; statusf="$state/held.status"
+  window="test:fm-held"
+  printf 'idle, held transfer\n' > "$capture_file"
+  printf 'window=%s\nkind=ship\nharness=grok\nbackend=tmux\n' "$window" > "$state/held.meta"
+  printf 'captain-held [key=route]: tracked by held-decision-route\n' > "$statusf"
+  sig=$(seen_sig "$statusf"); printf '%s' "$sig" > "$state/.seen-held_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  pane_hash=$(hash_text "idle, held transfer")
+  printf '%s' "$pane_hash" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  export FM_FAKE_CREW_STATE='state: working · source: run-step · validating (running)'
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_FAKE_TMUX_CURRENT_COMMAND=zsh \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  if ! wait_live "$pid" 30; then
+    reap "$pid"; fail "dead-agent captain-held transfer behind a working run-step was not absorbed: $(cat "$out")"
+  fi
+  [ ! -s "$out" ] || { reap "$pid"; fail "dead-agent captain-held transfer behind a working run-step printed a wake: $(cat "$out")"; }
+  [ ! -s "$state/.wake-queue" ] || { reap "$pid"; fail "dead-agent captain-held transfer enqueued a wake"; }
+  [ -e "$state/.paused-$key" ] || { reap "$pid"; fail "captain-held absorb did not establish the pause marker"; }
+  [ ! -e "$state/.stale-since-$key" ] || { reap "$pid"; fail "captain-held absorb started a wedge timer"; }
+  [ ! -e "$state/.wedge-escalations-$key" ] || { reap "$pid"; fail "captain-held absorb did not reset the wedge escalation counter"; }
+  reap "$pid"
+  unset FM_FAKE_CREW_STATE
+  pass "a captain-held transfer behind a working run-step is paused (not wedged) when the agent is dead"
+}
+
+test_declared_pause_alive_agent_keeps_working_wedge_detection() {
+  local dir state fakebin out capture_file statusf window key pane_hash sig pid
+  dir=$(make_case paused-alive-keeps-wedge); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"; statusf="$state/held.status"
+  window="test:fm-held"
+  printf 'idle, run monitor waiting\n' > "$capture_file"
+  printf 'window=%s\nkind=ship\nharness=grok\nbackend=tmux\n' "$window" > "$state/held.meta"
+  printf 'paused: claiming an external wait\n' > "$statusf"
+  sig=$(seen_sig "$statusf"); printf '%s' "$sig" > "$state/.seen-held_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  pane_hash=$(hash_text "idle, run monitor waiting")
+  printf '%s' "$pane_hash" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  # The agent is LIVE in the pane: the working run-step must keep winning, so a
+  # live worker that wrongly claims a pause still gets wedge detection.
+  export FM_FAKE_CREW_STATE='state: working · source: run-step · validating (running)'
+
+  # Phase A: first sight classifies working - wedge timer armed, no pause marker.
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_FAKE_TMUX_CURRENT_COMMAND=grok \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  if ! wait_live "$pid" 30; then
+    reap "$pid"; fail "alive-agent declared pause behind a working run-step was not absorbed as working: $(cat "$out")"
+  fi
+  [ ! -s "$out" ] || { reap "$pid"; fail "alive-agent working absorb printed a wake: $(cat "$out")"; }
+  [ -s "$state/.stale-since-$key" ] || { reap "$pid"; fail "alive-agent working absorb did not arm the wedge timer"; }
+  [ ! -e "$state/.paused-$key" ] || { reap "$pid"; fail "alive-agent declared pause was honored despite a live agent"; }
+  reap "$pid"
+
+  # Phase B: the working run-step freezes: the same window wedge-escalates,
+  # proving detection is not weakened by the pause declaration.
+  echo $(( $(date +%s) - 500 )) > "$state/.stale-since-$key"
+  : > "$out"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_FAKE_TMUX_CURRENT_COMMAND=grok \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 40 || fail "an alive-agent paused claim did not wedge-escalate past the threshold"
+  grep -F "possible wedge" "$out" >/dev/null || fail "alive-agent wedge escalation omitted its reason: $(cat "$out")"
+  unset FM_FAKE_CREW_STATE
+  pass "a declared pause behind a working run-step keeps wedge detection when the agent is alive"
+}
+
+test_declared_pause_unknown_liveness_keeps_today_behavior() {
+  local dir state fakebin out capture_file statusf window key pane_hash sig pid
+  dir=$(make_case paused-unknown-keeps-wedge); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"; statusf="$state/held.status"
+  window="test:fm-held"
+  printf 'idle, run monitor waiting\n' > "$capture_file"
+  printf 'window=%s\nkind=ship\nharness=grok\nbackend=tmux\n' "$window" > "$state/held.meta"
+  printf 'paused: claiming an external wait\n' > "$statusf"
+  sig=$(seen_sig "$statusf"); printf '%s' "$sig" > "$state/.seen-held_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  pane_hash=$(hash_text "idle, run monitor waiting")
+  printf '%s' "$pane_hash" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  # No FM_FAKE_TMUX_CURRENT_COMMAND: the tmux probe reads an empty foreground
+  # command, so liveness is unreadable -> unknown. Unknown is NOT dead: an
+  # unreadable endpoint is never proof that no agent is stuck, so today's
+  # working verdict and its wedge timer must be kept.
+  export FM_FAKE_CREW_STATE='state: working · source: run-step · validating (running)'
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  if ! wait_live "$pid" 30; then
+    reap "$pid"; fail "unknown-liveness declared pause behind a working run-step was not absorbed as working: $(cat "$out")"
+  fi
+  [ ! -s "$out" ] || { reap "$pid"; fail "unknown-liveness working absorb printed a wake: $(cat "$out")"; }
+  [ -s "$state/.stale-since-$key" ] || { reap "$pid"; fail "unknown-liveness working absorb did not arm the wedge timer"; }
+  [ ! -e "$state/.paused-$key" ] || { reap "$pid"; fail "unknown liveness was treated as dead and honored the pause"; }
+  reap "$pid"
+  unset FM_FAKE_CREW_STATE
+  pass "an unreadable liveness result is not dead: a declared pause behind a working run-step keeps today's working verdict"
+}
+
+test_no_declaration_working_runstep_dead_agent_unchanged() {
+  local dir state fakebin out capture_file statusf window key pane_hash sig pid
+  dir=$(make_case working-dead-no-declaration); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"; statusf="$state/held.status"
+  window="test:fm-held"
+  printf 'idle, run monitor waiting\n' > "$capture_file"
+  printf 'window=%s\nkind=ship\nharness=grok\nbackend=tmux\n' "$window" > "$state/held.meta"
+  printf 'working: run-step validating\n' > "$statusf"
+  sig=$(seen_sig "$statusf"); printf '%s' "$sig" > "$state/.seen-held_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  pane_hash=$(hash_text "idle, run monitor waiting")
+  printf '%s' "$pane_hash" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  # A dead agent WITHOUT a declared pause changes nothing: the working run-step
+  # keeps its verdict and wedge timer exactly as before.
+  export FM_FAKE_CREW_STATE='state: working · source: run-step · validating (running)'
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_FAKE_TMUX_CURRENT_COMMAND=zsh \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  if ! wait_live "$pid" 30; then
+    reap "$pid"; fail "a working run-step without a declaration was not absorbed as working: $(cat "$out")"
+  fi
+  [ ! -s "$out" ] || { reap "$pid"; fail "working-without-declaration absorb printed a wake: $(cat "$out")"; }
+  [ -s "$state/.stale-since-$key" ] || { reap "$pid"; fail "working-without-declaration absorb did not arm the wedge timer"; }
+  [ ! -e "$state/.paused-$key" ] || { reap "$pid"; fail "a dead agent without a declaration established pause mode"; }
+  reap "$pid"
+  unset FM_FAKE_CREW_STATE
+  pass "a working run-step without a declared pause is unchanged even when the agent is dead"
+}
+
 # --- consecutive wedge escalations on the same pane demand deep inspection ----
 # Root cause of the PR #252 incident's ~20 minutes of unnoticed green: each
 # wedge escalation fires, gets classified as "still validating" one poll later
@@ -2131,6 +2345,11 @@ test_secondmate_unpause_clears_pause_tracking
 test_nonterminal_stale_pause_transitions_reclassify_unchanged_hash
 test_nonterminal_paused_rechecks_authoritative_state
 test_paused_authoritative_working_preserves_wedge_timer
+test_declared_pause_dead_agent_outranks_working_runstep
+test_declared_captain_held_dead_agent_outranks_working_runstep
+test_declared_pause_alive_agent_keeps_working_wedge_detection
+test_declared_pause_unknown_liveness_keeps_today_behavior
+test_no_declaration_working_runstep_dead_agent_unchanged
 test_nonterminal_stale_repairs_missing_or_corrupt_timer
 test_rendered_idle_watchdog_escalates_stopped_codex
 test_rendered_idle_watchdog_ignores_busy_and_paused_codex
