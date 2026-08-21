@@ -650,8 +650,14 @@ clear_pause_tracking() {  # <window>
 }
 
 # Reconcile a declared pause or captain-held status with authoritative crew state.
-# Only a confidently dead ordinary crew may recover paused classification after
-# fm-crew-state has fallen back to stopped or unknown.
+# The declaration is authoritative only when no agent can be stuck: for an
+# ordinary crew it outranks every verdict - including an authoritative working
+# run-step - only when the backend confidently reports its agent dead, and may
+# recover paused classification after fm-crew-state has fallen back to stopped,
+# unknown, or a working run-step behind an exited agent. A live agent that
+# wrongly claims a pause, or an unreadable liveness result, keeps the
+# authoritative verdict so wedge detection is never weakened. Secondmate
+# windows keep their idle-endpoint exemption and never consult liveness here.
 pause_state_class() {  # <window> <task>
   local win=$1 task=$2 key last recheck_file class agent_alive
   key=${win//:/_}
@@ -677,18 +683,29 @@ pause_state_class() {  # <window> <task>
     return
   fi
   class=$(crew_absorb_class "$task")
-  if [ "$class" = working ]; then
-    rm -f "$recheck_file"
-    printf 'working'
-    return
-  fi
   if [ "$(window_kind "$win")" != secondmate ]; then
     agent_alive=$(fm_backend_agent_alive "$(window_backend "$win")" "$win" 2>/dev/null) || agent_alive=unknown
-    if [ "$agent_alive" != dead ]; then
+    if [ "$class" = working ]; then
+      # A working run-step outranks the declaration except when the agent is
+      # confidently dead: a run-step cannot drive work from an endpoint whose
+      # agent is gone, so the declaration owns the pane and the caller's pause
+      # bookkeeping takes over. Only `dead` overrides - an unreadable endpoint
+      # is never proof that no agent is stuck.
+      if [ "$agent_alive" != dead ]; then
+        rm -f "$recheck_file"
+        printf 'working'
+        return
+      fi
+      class=paused
+    elif [ "$agent_alive" != dead ]; then
       rm -f "$recheck_file"
       printf 'none'
       return
     fi
+  elif [ "$class" = working ]; then
+    rm -f "$recheck_file"
+    printf 'working'
+    return
   fi
   [ "$class" = none ] && [ "${agent_alive:-unknown}" = dead ] && class=paused
   case "$class" in
