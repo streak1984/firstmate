@@ -42,6 +42,10 @@ See the [no-mistakes quick start](https://kunchenguid.github.io/no-mistakes/star
   A local `config/backlog-backend=manual` opt-out forces firstmate's routine backlog updates to hand-editing and stays gitignored; validated secondmate handoffs still delegate through `tasks-axi mv`.
   A local `config/backend` file explicitly overrides runtime auto-detection for new task endpoints and stays gitignored; spawn-supported values are `tmux` plus experimental `herdr`, `zellij`, `orca`, and `cmux`, while `codex-app` is documented only in `docs/codex-app-backend.md`.
   It does not make `data/` tracked.
+- This fork declares no GitHub CI checks.
+  The workflow files exist on `main`, but GitHub disables Actions on forks and none have ever run here.
+  Validation is the local no-mistakes pipeline, and the fork declaration in `.no-mistakes.yaml` is what stops pipeline runs from parking in the CI monitor.
+  The captain chose this declaration over enabling Actions on the fork; do not remove it or enable workflows without revisiting that decision.
 - Helper scripts in `bin/` are plain bash.
   Each starts with a usage header comment; keep it accurate when you change behavior.
   Test scripts and helpers in `tests/` are plain bash too.

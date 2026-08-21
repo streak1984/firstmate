@@ -1,5 +1,20 @@
 # Per-repo no-mistakes overrides.
 
+# Positive declaration that this fork intentionally has no CI checks.
+#
+# This is not the simple no-workflow case: .github/workflows/ci.yml and
+# .github/workflows/no-mistakes-required.yml exist on main, but GitHub disables
+# Actions on a fork until a human enables it, and this fork has never run one,
+# so no checks ever register. Validation for this repo is the local no-mistakes
+# pipeline.
+#
+# no-mistakes reads this field only from the trusted default branch, so a
+# per-invocation `--skip ci` covers only the one run it is typed on.
+#
+# Enabling Actions on this fork is the alternative the captain declined; do not
+# "fix" this by deleting the file unless that decision is revisited.
+no_ci: true
+
 # firstmate is an agent-orchestration repo: its AGENTS.md installs a fleet-captain
 # identity. Disable project-level agent settings/instructions for gate agents so a
 # no-mistakes review/fix/document/test/lint/pr/rebase/ci agent never adopts that
