@@ -178,6 +178,20 @@ run_spawn() {
     "$SPAWN" "$id" "$project" --harness claude --scout 2>&1
 }
 
+run_raw_spawn() {
+  local home=$1 project=$2 worktree=$3 fakebin=$4 id=$5
+  shift 5
+  HOME="$home" FM_ROOT_OVERRIDE='' FM_HOME="$home" \
+    FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
+    FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
+    FM_BACKEND=herdr HERDR_SESSION="fmtest-$id" FM_SPAWN_NO_GUARD=1 \
+    FM_FAKE_HERDR_LOG="$TMP_ROOT/$id.log" FM_FAKE_HERDR_STATE="$fakebin/../state.json" \
+    FM_FAKE_HERDR_AGENT_COUNT_FILE="$fakebin/../agent-get-count" \
+    FM_FAKE_HERDR_CWD="$worktree" \
+    env "$@" PATH="$fakebin:$PATH" \
+    "$SPAWN" "$id" "$project" "sh -c 'sleep 1'" --scout 2>&1
+}
+
 # The exact race from data/fm-herdr-080-verify-w6/report.md: the agent
 # registers two reads after the pane exists (well inside the settle
 # window's default 6-poll budget), so the very first dead reads must not be
@@ -232,5 +246,26 @@ EOF
   pass "fm-spawn: an agent that never registers is still refused once the bounded settle window elapses"
 }
 
+test_raw_command_without_agent_registration_stays_unknown() {
+  local id="regrace-raw-$$" rec home project worktree fakebin out rc=0
+  rec=$(make_case raw "$id")
+  IFS='|' read -r home project worktree fakebin <<EOF
+$rec
+EOF
+  out=$(run_raw_spawn "$home" "$project" "$worktree" "$fakebin" "$id" \
+    FM_FAKE_HERDR_AGENT_REGISTERS_AFTER=999 \
+    FM_SPAWN_CONFIRM_TIMEOUT=45 FM_SPAWN_CONFIRM_UNCONFIRMABLE_TIMEOUT=0.2 \
+    FM_SPAWN_CONFIRM_POLL_INTERVAL=0.1) || rc=$?
+  expect_code 0 "$rc" "a live raw command must not require Herdr agent registration"
+  assert_contains "$out" "confirm: unknown missing" \
+    "a live raw command with no agent row was misreported as a dead endpoint"
+  assert_not_contains "$out" "confirm: failed endpoint-dead" \
+    "the agent registry was incorrectly applied to a raw command"
+  [ ! -f "$home/state/$id.status" ] || assert_no_grep 'blocked:' "$home/state/$id.status" \
+    "a live raw command must not append a blocked line"
+  pass "fm-spawn: a raw command does not require a Herdr agent-registry row"
+}
+
 test_delayed_agent_registration_is_confirmed_not_refused
 test_agent_never_registering_is_still_refused_after_settle_window
+test_raw_command_without_agent_registration_stays_unknown

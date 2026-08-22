@@ -138,8 +138,10 @@ fm_harness_ancestry_pids() {
 # is still running. Every non-Claude harness reports a single pid, so this is its
 # innermost match unchanged.
 fm_harness_ancestry_pid() {
-  local pids pid outermost=''
-  pids=$(fm_harness_ancestry_pids) || return 1
+  local pids pid outermost='' status
+  pids=$(fm_harness_ancestry_pids)
+  status=$?
+  [ "$status" -eq 0 ] || return "$status"
   while IFS= read -r pid; do
     [ -n "$pid" ] && outermost=$pid
   done <<EOF

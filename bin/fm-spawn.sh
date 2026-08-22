@@ -2472,6 +2472,12 @@ spawn_confirm_registration_settled_verdict() {  # <backend> <target> <harness> <
   local backend=$1 target=$2 harness=$3 id=$4 state=$5
   local verdict interval polls i=1
   verdict=$(fm_busy_classify_live "$backend" "$target" "$harness" "$id" "$state")
+  # Raw commands are not verified harness launches and need not register as
+  # agents. Preserve endpoint-gone as a hard failure, but do not reinterpret a
+  # live raw-command pane as dead merely because the agent registry has no row.
+  if [ "$verdict" = "dead agent-gone" ] && [ "${LAUNCH_IS_TEMPLATE:-1}" -eq 0 ]; then
+    verdict="unknown missing"
+  fi
   if [ "$verdict" = "dead agent-gone" ] && fm_busy_agent_proof_capable "$backend"; then
     interval=${FM_SPAWN_CONFIRM_DEAD_SETTLE_POLL_INTERVAL:-0.25}
     polls=$(awk -v t="${FM_SPAWN_CONFIRM_DEAD_SETTLE_TIMEOUT:-1.5}" -v i="$interval" \
@@ -2506,8 +2512,16 @@ spawn_confirm_launch() {  # -> "<state> <detail>" on stdout; 1 only on failed
   esac
   timeout=${FM_SPAWN_CONFIRM_TIMEOUT:-45}
   interval=${FM_SPAWN_CONFIRM_POLL_INTERVAL:-0.5}
-  case "$HARNESS" in
-    codex*)
+  case "$LAUNCH_IS_TEMPLATE:$HARNESS" in
+    0:*)
+      # A raw command has no verified lifecycle source, so it can never
+      # classify as processing through the harness contract. Keep the bounded
+      # prompt and endpoint checks without stalling every raw spawn for the
+      # full confirmation budget.
+      timeout=$(awk -v t="$timeout" -v c="${FM_SPAWN_CONFIRM_UNCONFIRMABLE_TIMEOUT:-5}" \
+        'BEGIN { if (c >= 0 && c < t) t = c; print t }')
+      ;;
+    1:codex*)
       # Codex arms no busy record and only herdr supplies a native busy
       # verdict, so a codex launch outside herdr can never classify
       # processing. Cap the window so dialog and dead-endpoint detection
